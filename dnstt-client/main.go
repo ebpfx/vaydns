@@ -2,12 +2,12 @@
 //
 // Usage:
 //
-//	dnstt-client [-doh URL|-dot ADDR|-udp ADDR] -pubkey-file PUBKEYFILE DOMAIN LOCALADDR
+//	dnstt-client [-doh URL|-dot ADDR|-udp ADDR] -pubkey-file PUBKEYFILE -domain DOMAIN -listen LOCALADDR
 //
 // Examples:
 //
-//	dnstt-client -doh https://resolver.example/dns-query -pubkey-file server.pub t.example.com 127.0.0.1:7000
-//	dnstt-client -dot resolver.example:853 -pubkey-file server.pub t.example.com 127.0.0.1:7000
+//	dnstt-client -doh https://resolver.example/dns-query -pubkey-file server.pub -domain t.example.com -listen 127.0.0.1:7000
+//	dnstt-client -dot resolver.example:853 -pubkey-file server.pub -domain t.example.com -listen 127.0.0.1:7000
 //
 // The program supports DNS over HTTPS (DoH), DNS over TLS (DoT), and UDP DNS.
 // Use one of these options:
@@ -22,11 +22,11 @@
 //	-pubkey-file server.pub
 //	-pubkey 0000111122223333444455556666777788889999aaaabbbbccccddddeeeeffff
 //
-// DOMAIN is the root of the DNS zone reserved for the tunnel. See README for
-// instructions on setting it up.
+// The -domain option specifies the root of the DNS zone reserved for the
+// tunnel. See README for instructions on setting it up.
 //
-// LOCALADDR is the TCP address that will listen for connections and forward
-// them over the tunnel.
+// The -listen option specifies the TCP address that will listen for connections
+// and forward them over the tunnel.
 //
 // In -doh and -dot modes, the program's TLS fingerprint is camouflaged with
 // uTLS by default. The specific TLS fingerprint is selected randomly from a
@@ -240,6 +240,8 @@ func run(pubkey []byte, domain dns.Name, localAddr *net.TCPAddr, remoteAddr net.
 func main() {
 	var dohURL string
 	var dotAddr string
+	var domainArg string
+	var listenAddr string
 	var pubkeyFilename string
 	var pubkeyString string
 	var udpAddr string
@@ -247,11 +249,11 @@ func main() {
 
 	flag.Usage = func() {
 		fmt.Fprintf(flag.CommandLine.Output(), `Usage:
-  %[1]s [-doh URL|-dot ADDR|-udp ADDR] -pubkey-file PUBKEYFILE DOMAIN LOCALADDR
+  %[1]s [-doh URL|-dot ADDR|-udp ADDR] -pubkey-file PUBKEYFILE -domain DOMAIN -listen LOCALADDR
 
 Examples:
-  %[1]s -doh https://resolver.example/dns-query -pubkey-file server.pub t.example.com 127.0.0.1:7000
-  %[1]s -dot resolver.example:853 -pubkey-file server.pub t.example.com 127.0.0.1:7000
+  %[1]s -doh https://resolver.example/dns-query -pubkey-file server.pub -domain t.example.com -listen 127.0.0.1:7000
+  %[1]s -dot resolver.example:853 -pubkey-file server.pub -domain t.example.com -listen 127.0.0.1:7000
 
 `, os.Args[0])
 		flag.PrintDefaults()
@@ -285,6 +287,8 @@ Known TLS fingerprints for -utls are:
 	flag.StringVar(&utlsDistribution, "utls",
 		"4*random,3*Firefox_120,1*Firefox_105,3*Chrome_120,1*Chrome_102,1*iOS_14,1*iOS_13",
 		"choose TLS fingerprint from weighted distribution")
+	flag.StringVar(&domainArg, "domain", "", "tunnel domain (e.g., t.example.com)")
+	flag.StringVar(&listenAddr, "listen", "", "TCP address to listen on for local connections (e.g., 127.0.0.1:7000)")
 
 	var logLevel string
 	flag.StringVar(&logLevel, "log-level", "warning", "log level (debug, info, warning, error)")
@@ -298,16 +302,26 @@ Known TLS fingerprints for -utls are:
 	log.SetLevel(level)
 	log.SetFormatter(&log.TextFormatter{FullTimestamp: true, TimestampFormat: "2006-01-02 15:04:05"})
 
-	if flag.NArg() != 2 {
+	if flag.NArg() != 0 {
+		fmt.Fprintf(os.Stderr, "unexpected positional arguments\n")
 		flag.Usage()
 		os.Exit(1)
 	}
-	domain, err := dns.ParseName(flag.Arg(0))
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "invalid domain %+q: %v\n", flag.Arg(0), err)
+	if domainArg == "" {
+		fmt.Fprintf(os.Stderr, "the -domain option is required\n")
 		os.Exit(1)
 	}
-	localAddr, err := net.ResolveTCPAddr("tcp", flag.Arg(1))
+	if listenAddr == "" {
+		fmt.Fprintf(os.Stderr, "the -listen option is required\n")
+		os.Exit(1)
+	}
+	domain, err := dns.ParseName(domainArg)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "invalid domain %+q: %v\n", domainArg, err)
+		os.Exit(1)
+	}
+	log.Infof("using domain: %s", domain)
+	localAddr, err := net.ResolveTCPAddr("tcp", listenAddr)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)

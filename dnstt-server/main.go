@@ -3,16 +3,16 @@
 // Usage:
 //
 //	dnstt-server -gen-key [-privkey-file PRIVKEYFILE] [-pubkey-file PUBKEYFILE]
-//	dnstt-server -udp ADDR [-privkey PRIVKEY|-privkey-file PRIVKEYFILE] [-fallback FALLBACKADDR] DOMAIN UPSTREAMADDR
+//	dnstt-server -udp ADDR [-privkey PRIVKEY|-privkey-file PRIVKEYFILE] [-fallback FALLBACKADDR] -domain DOMAIN -upstream UPSTREAMADDR
 //
 // Example:
 //
 //	dnstt-server -gen-key -privkey-file server.key -pubkey-file server.pub
-//	dnstt-server -udp :53 -privkey-file server.key t.example.com 127.0.0.1:8000
+//	dnstt-server -udp :53 -privkey-file server.key -domain t.example.com -upstream 127.0.0.1:8000
 //
 // With fallback for non-DNS traffic:
 //
-//	dnstt-server -udp :53 -privkey-file server.key -fallback 127.0.0.1:8888 t.example.com 127.0.0.1:8000
+//	dnstt-server -udp :53 -privkey-file server.key -fallback 127.0.0.1:8888 -domain t.example.com -upstream 127.0.0.1:8000
 //
 // To generate a persistent server private key, first run with the -gen-key
 // option. By default the generated private and public keys are printed to
@@ -40,11 +40,11 @@
 // This acts as a simple UDP proxy for non-DNS traffic, allowing another
 // service to run on the same port.
 //
-// DOMAIN is the root of the DNS zone reserved for the tunnel. See README for
-// instructions on setting it up.
+// The -domain option specifies the root of the DNS zone reserved for the
+// tunnel. See README for instructions on setting it up.
 //
-// UPSTREAMADDR is the TCP address to which incoming tunnelled streams will be
-// forwarded.
+// The -upstream option specifies the TCP address to which incoming tunnelled
+// streams will be forwarded.
 package main
 
 import (
@@ -975,6 +975,8 @@ func run(privkey []byte, domain dns.Name, upstream string, dnsConn net.PacketCon
 
 func main() {
 	var genKey bool
+	var domainArg string
+	var upstream string
 	var privkeyFilename string
 	var privkeyString string
 	var pubkeyFilename string
@@ -984,12 +986,12 @@ func main() {
 	flag.Usage = func() {
 		fmt.Fprintf(flag.CommandLine.Output(), `Usage:
   %[1]s -gen-key -privkey-file PRIVKEYFILE -pubkey-file PUBKEYFILE
-  %[1]s -udp ADDR -privkey-file PRIVKEYFILE [-fallback FALLBACKADDR] DOMAIN UPSTREAMADDR
+  %[1]s -udp ADDR -privkey-file PRIVKEYFILE [-fallback FALLBACKADDR] -domain DOMAIN -upstream UPSTREAMADDR
 
 Example:
   %[1]s -gen-key -privkey-file server.key -pubkey-file server.pub
-  %[1]s -udp :53 -privkey-file server.key t.example.com 127.0.0.1:8000
-  %[1]s -udp :53 -privkey-file server.key -fallback 127.0.0.1:8888 t.example.com 127.0.0.1:8000
+  %[1]s -udp :53 -privkey-file server.key -domain t.example.com -upstream 127.0.0.1:8000
+  %[1]s -udp :53 -privkey-file server.key -fallback 127.0.0.1:8888 -domain t.example.com -upstream 127.0.0.1:8000
 
 `, os.Args[0])
 		flag.PrintDefaults()
@@ -1001,6 +1003,8 @@ Example:
 	flag.StringVar(&pubkeyFilename, "pubkey-file", "", "with -gen-key, write server public key to file")
 	flag.StringVar(&udpAddr, "udp", "", "UDP address to listen on (required)")
 	flag.StringVar(&fallbackAddrString, "fallback", "", "UDP endpoint to forward non-DNS packets to (e.g., 127.0.0.1:8888)")
+	flag.StringVar(&domainArg, "domain", "", "tunnel domain (e.g., t.example.com)")
+	flag.StringVar(&upstream, "upstream", "", "TCP address to forward tunneled connections to (e.g., 127.0.0.1:8000)")
 
 	var logLevel string
 	flag.StringVar(&logLevel, "log-level", "warning", "log level (debug, info, warning, error)")
@@ -1016,7 +1020,7 @@ Example:
 
 	if genKey {
 		// -gen-key mode.
-		if flag.NArg() != 0 || privkeyString != "" || udpAddr != "" || fallbackAddrString != "" {
+		if flag.NArg() != 0 || privkeyString != "" || udpAddr != "" || fallbackAddrString != "" || domainArg != "" || upstream != "" {
 			flag.Usage()
 			os.Exit(1)
 		}
@@ -1026,16 +1030,25 @@ Example:
 		}
 	} else {
 		// Ordinary server mode.
-		if flag.NArg() != 2 {
+		if flag.NArg() != 0 {
+			fmt.Fprintf(os.Stderr, "unexpected positional arguments\n")
 			flag.Usage()
 			os.Exit(1)
 		}
-		domain, err := dns.ParseName(flag.Arg(0))
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "invalid domain %+q: %v\n", flag.Arg(0), err)
+		if domainArg == "" {
+			fmt.Fprintf(os.Stderr, "the -domain option is required\n")
 			os.Exit(1)
 		}
-		upstream := flag.Arg(1)
+		if upstream == "" {
+			fmt.Fprintf(os.Stderr, "the -upstream option is required\n")
+			os.Exit(1)
+		}
+		domain, err := dns.ParseName(domainArg)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "invalid domain %+q: %v\n", domainArg, err)
+			os.Exit(1)
+		}
+		log.Infof("serving domain: %s", domain)
 		// We keep upstream as a string in order to eventually pass it
 		// to net.Dial in handleStream. But for the sake of displaying
 		// an error or warning at startup, rather than only when the
