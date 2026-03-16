@@ -61,8 +61,14 @@ import (
 	"www.bamsoftware.com/git/dnstt.git/turbotunnel"
 )
 
-// smux streams will be closed after this much time without receiving data.
-const idleTimeout = 2 * time.Minute
+const (
+	defaultIdleTimeout   = 10 * time.Second
+	defaultKeepAlive     = 2 * time.Second
+	sessionCheckInterval = 500 * time.Millisecond
+	reconnectInitDelay   = 1 * time.Second
+	reconnectMaxDelay    = 2 * time.Minute
+	openStreamTimeout    = 3 * time.Second
+)
 
 // dnsNameCapacity returns the number of raw bytes that can be encoded in a DNS
 // query name, given the domain suffix and encoding constraints.
@@ -142,11 +148,35 @@ func sampleUTLSDistribution(spec string) (*utls.ClientHelloID, error) {
 	return ids[sampleWeighted(weights)], nil
 }
 
+type streamResult struct {
+	stream *smux.Stream
+	err    error
+}
+
 func handle(local *net.TCPConn, sess *smux.Session, conv uint32) error {
-	stream, err := sess.OpenStream()
-	if err != nil {
-		return fmt.Errorf("session %08x opening stream: %v", conv, err)
+	ch := make(chan streamResult, 1)
+	go func() {
+		s, err := sess.OpenStream()
+		ch <- streamResult{s, err}
+	}()
+
+	var stream *smux.Stream
+	select {
+	case r := <-ch:
+		if r.err != nil {
+			return fmt.Errorf("session %08x opening stream: %v", conv, r.err)
+		}
+		stream = r.stream
+	case <-time.After(openStreamTimeout):
+		go func() {
+			r := <-ch
+			if r.stream != nil {
+				r.stream.Close()
+			}
+		}()
+		return fmt.Errorf("session %08x opening stream: timed out after %v", conv, openStreamTimeout)
 	}
+
 	defer func() {
 		log.Debugf("end stream %08x:%d", conv, stream.ID())
 		stream.Close()
@@ -182,25 +212,49 @@ func handle(local *net.TCPConn, sess *smux.Session, conv uint32) error {
 	}()
 	wg.Wait()
 
-	return err
+	return nil
 }
 
-func run(pubkey []byte, domain dns.Name, localAddr *net.TCPAddr, remoteAddr net.Addr, pconn net.PacketConn, maxQnameLen int, maxNumLabels int) error {
-	defer pconn.Close()
-
-	ln, err := net.ListenTCP("tcp", localAddr)
+func createTunnelSession(pconn net.PacketConn, remoteAddr net.Addr, pubkey []byte, mtu int, idleTimeout time.Duration, keepAlive time.Duration) (*kcp.UDPSession, *smux.Session, error) {
+	conn, err := kcp.NewConn2(remoteAddr, nil, 0, 0, pconn)
 	if err != nil {
-		return fmt.Errorf("opening local listener: %v", err)
+		return nil, nil, fmt.Errorf("opening KCP conn: %v", err)
 	}
-	defer ln.Close()
+	log.Infof("begin session %08x", conn.GetConv())
+	conn.SetStreamMode(true)
+	conn.SetNoDelay(0, 0, 0, 1)
+	conn.SetWindowSize(turbotunnel.QueueSize/2, turbotunnel.QueueSize/2)
+	if rc := conn.SetMtu(mtu); !rc {
+		conn.Close()
+		return nil, nil, fmt.Errorf("failed to set KCP MTU to %d", mtu)
+	}
+
+	rw, err := noise.NewClient(conn, pubkey)
+	if err != nil {
+		conn.Close()
+		return nil, nil, fmt.Errorf("noise handshake: %v", err)
+	}
+
+	smuxConfig := smux.DefaultConfig()
+	smuxConfig.Version = 2
+	smuxConfig.KeepAliveInterval = keepAlive
+	smuxConfig.KeepAliveTimeout = idleTimeout
+	smuxConfig.MaxStreamBuffer = 1 * 1024 * 1024
+	sess, err := smux.Client(rw, smuxConfig)
+	if err != nil {
+		conn.Close()
+		return nil, nil, fmt.Errorf("opening smux session: %v", err)
+	}
+
+	return conn, sess, nil
+}
+
+func run(pubkey []byte, domain dns.Name, localAddr *net.TCPAddr, remoteAddr net.Addr, pconn net.PacketConn, maxQnameLen int, maxNumLabels int, idleTimeout time.Duration, keepAlive time.Duration, maxStreams int) error {
+	defer pconn.Close()
 
 	const clientIDSize = 2
 	const dataLenSize = 1
 	mtu := dnsNameCapacity(domain, maxQnameLen, maxNumLabels) - clientIDSize - dataLenSize
-	// KCP has a fixed 24-byte header per packet (conv + cmd + frg + wnd +
-	// ts + sn + una + len). On top of that, Noise and smux add their own
-	// framing. Below 50 bytes the usable payload per query is so small
-	// that the tunnel becomes impractically slow.
 	const kcpMinMTU = 50
 	if mtu < kcpMinMTU {
 		domainWireLen := 0
@@ -216,63 +270,85 @@ func run(pubkey []byte, domain dns.Name, localAddr *net.TCPAddr, remoteAddr net.
 	}
 	log.Infof("effective MTU %d", mtu)
 
-	// Open a KCP conn on the PacketConn.
-	conn, err := kcp.NewConn2(remoteAddr, nil, 0, 0, pconn)
+	ln, err := net.ListenTCP("tcp", localAddr)
 	if err != nil {
-		return fmt.Errorf("opening KCP conn: %v", err)
+		return fmt.Errorf("opening local listener: %v", err)
 	}
-	defer func() {
-		log.Debugf("end session %08x", conn.GetConv())
-		conn.Close()
-	}()
-	log.Infof("begin session %08x", conn.GetConv())
-	// Permit coalescing the payloads of consecutive sends.
-	conn.SetStreamMode(true)
-	// Disable the dynamic congestion window (limit only by the maximum of
-	// local and remote static windows).
-	conn.SetNoDelay(
-		0, // default nodelay
-		0, // default interval
-		0, // default resend
-		1, // nc=1 => congestion window off
-	)
-	conn.SetWindowSize(turbotunnel.QueueSize/2, turbotunnel.QueueSize/2)
-	if rc := conn.SetMtu(mtu); !rc {
-		panic(rc)
-	}
+	defer ln.Close()
 
-	// Put a Noise channel on top of the KCP conn.
-	rw, err := noise.NewClient(conn, pubkey)
-	if err != nil {
-		return err
+	// Stream concurrency semaphore.
+	var sem chan struct{}
+	if maxStreams > 0 {
+		sem = make(chan struct{}, maxStreams)
 	}
-
-	// Start a smux session on the Noise channel.
-	smuxConfig := smux.DefaultConfig()
-	smuxConfig.Version = 2
-	smuxConfig.KeepAliveTimeout = idleTimeout
-	smuxConfig.MaxStreamBuffer = 1 * 1024 * 1024 // default is 65536
-	sess, err := smux.Client(rw, smuxConfig)
-	if err != nil {
-		return fmt.Errorf("opening smux session: %v", err)
-	}
-	defer sess.Close()
 
 	for {
-		local, err := ln.Accept()
-		if err != nil {
-			if err, ok := err.(net.Error); ok && err.Temporary() {
-				continue
+		// Create a new tunnel session with exponential backoff on failure.
+		var conn *kcp.UDPSession
+		var sess *smux.Session
+		delay := reconnectInitDelay
+		for {
+			conn, sess, err = createTunnelSession(pconn, remoteAddr, pubkey, mtu, idleTimeout, keepAlive)
+			if err == nil {
+				break
 			}
-			return err
+			log.Warnf("session creation failed: %v; retrying in %v", err, delay)
+			time.Sleep(delay)
+			delay *= 2
+			if delay > reconnectMaxDelay {
+				delay = reconnectMaxDelay
+			}
 		}
-		go func() {
-			defer local.Close()
-			err := handle(local.(*net.TCPConn), sess, conn.GetConv())
+
+		sessDone := sess.CloseChan()
+		conv := conn.GetConv()
+
+		// Accept connections until the session dies.
+		sessionAlive := true
+		for sessionAlive {
+			ln.SetDeadline(time.Now().Add(sessionCheckInterval))
+			local, err := ln.Accept()
 			if err != nil {
-				log.Warnf("handle: %v", err)
+				if ne, ok := err.(net.Error); ok && ne.Timeout() {
+					// Check if session is still alive.
+					select {
+					case <-sessDone:
+						sessionAlive = false
+					default:
+					}
+					continue
+				}
+				// Fatal listener error.
+				sess.Close()
+				conn.Close()
+				return err
 			}
-		}()
+
+			// Check session health before spawning handler.
+			select {
+			case <-sessDone:
+				local.Close()
+				sessionAlive = false
+				continue
+			default:
+			}
+
+			go func() {
+				if sem != nil {
+					sem <- struct{}{}
+					defer func() { <-sem }()
+				}
+				defer local.Close()
+				err := handle(local.(*net.TCPConn), sess, conv)
+				if err != nil {
+					log.Warnf("handle: %v", err)
+				}
+			}()
+		}
+
+		log.Warnf("session %08x died, reconnecting", conv)
+		sess.Close()
+		conn.Close()
 	}
 }
 
@@ -288,6 +364,9 @@ func main() {
 	var maxQnameLen int
 	var maxNumLabels int
 	var rpsLimit float64
+	var idleTimeoutStr string
+	var keepAliveStr string
+	var maxStreams int
 
 	flag.Usage = func() {
 		fmt.Fprintf(flag.CommandLine.Output(), `Usage:
@@ -334,6 +413,9 @@ Known TLS fingerprints for -utls are:
 	flag.IntVar(&maxQnameLen, "max-qname-len", 101, "maximum total QNAME length in wire format (0 = 253 per RFC 1035)")
 	flag.IntVar(&maxNumLabels, "max-num-labels", 0, "maximum number of data labels in query name (0 = unlimited)")
 	flag.Float64Var(&rpsLimit, "rps", 0, "limit outgoing DNS queries per second (0 = unlimited)")
+	flag.StringVar(&idleTimeoutStr, "idle-timeout", defaultIdleTimeout.String(), "session idle timeout duration (e.g. 10s, 1m)")
+	flag.StringVar(&keepAliveStr, "keepalive", defaultKeepAlive.String(), "keepalive ping interval (must be less than idle-timeout)")
+	flag.IntVar(&maxStreams, "max-streams", 256, "max concurrent streams per session (0 = unlimited)")
 
 	var logLevel string
 	flag.StringVar(&logLevel, "log-level", "warning", "log level (debug, info, warning, error)")
@@ -475,12 +557,27 @@ Known TLS fingerprints for -utls are:
 		os.Exit(1)
 	}
 
+	idleTimeout, err := time.ParseDuration(idleTimeoutStr)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "invalid -idle-timeout: %v\n", err)
+		os.Exit(1)
+	}
+	keepAlive, err := time.ParseDuration(keepAliveStr)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "invalid -keepalive: %v\n", err)
+		os.Exit(1)
+	}
+	if keepAlive >= idleTimeout {
+		fmt.Fprintf(os.Stderr, "-keepalive (%s) must be less than -idle-timeout (%s)\n", keepAlive, idleTimeout)
+		os.Exit(1)
+	}
+
 	rateLimiter := NewRateLimiter(rpsLimit)
 	if rateLimiter != nil {
 		log.Infof("rate limiting DNS queries to %.1f requests per second", rpsLimit)
 	}
 	pconn = NewDNSPacketConn(pconn, remoteAddr, domain, rateLimiter, maxQnameLen, maxNumLabels)
-	err = run(pubkey, domain, localAddr, remoteAddr, pconn, maxQnameLen, maxNumLabels)
+	err = run(pubkey, domain, localAddr, remoteAddr, pconn, maxQnameLen, maxNumLabels, idleTimeout, keepAlive, maxStreams)
 	if err != nil {
 		log.Fatalf("%v", err)
 	}

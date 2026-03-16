@@ -73,8 +73,8 @@ import (
 )
 
 const (
-	// smux streams will be closed after this much time without receiving data.
-	idleTimeout = 2 * time.Minute
+	defaultIdleTimeout = 10 * time.Second
+	defaultKeepAlive   = 2 * time.Second
 
 	// How to set the TTL field in Answer resource records.
 	responseTTL = 60
@@ -264,7 +264,7 @@ func handleStream(stream *smux.Stream, upstream string, conv uint32) error {
 
 // acceptStreams wraps a KCP session in a Noise channel and an smux.Session,
 // then awaits smux streams. It passes each stream to handleStream.
-func acceptStreams(conn *kcp.UDPSession, privkey []byte, upstream string) error {
+func acceptStreams(conn *kcp.UDPSession, privkey []byte, upstream string, idleTimeout time.Duration, keepAlive time.Duration) error {
 	// Put a Noise channel on top of the KCP conn.
 	rw, err := noise.NewServer(conn, privkey)
 	if err != nil {
@@ -274,6 +274,7 @@ func acceptStreams(conn *kcp.UDPSession, privkey []byte, upstream string) error 
 	// Put an smux session on top of the encrypted Noise channel.
 	smuxConfig := smux.DefaultConfig()
 	smuxConfig.Version = 2
+	smuxConfig.KeepAliveInterval = keepAlive
 	smuxConfig.KeepAliveTimeout = idleTimeout
 	smuxConfig.MaxStreamBuffer = 1 * 1024 * 1024 // default is 65536
 	sess, err := smux.Server(rw, smuxConfig)
@@ -306,7 +307,7 @@ func acceptStreams(conn *kcp.UDPSession, privkey []byte, upstream string) error 
 
 // acceptSessions listens for incoming KCP connections and passes them to
 // acceptStreams.
-func acceptSessions(ln *kcp.Listener, privkey []byte, mtu int, upstream string) error {
+func acceptSessions(ln *kcp.Listener, privkey []byte, mtu int, upstream string, idleTimeout time.Duration, keepAlive time.Duration) error {
 	for {
 		conn, err := ln.AcceptKCP()
 		if err != nil {
@@ -335,7 +336,7 @@ func acceptSessions(ln *kcp.Listener, privkey []byte, mtu int, upstream string) 
 				log.Debugf("end session %08x", conn.GetConv())
 				conn.Close()
 			}()
-			err := acceptStreams(conn, privkey, upstream)
+			err := acceptStreams(conn, privkey, upstream, idleTimeout, keepAlive)
 			if err != nil && !errors.Is(err, io.ErrClosedPipe) {
 				log.Warnf("session %08x acceptStreams: %v", conn.GetConv(), err)
 			}
@@ -918,7 +919,7 @@ func computeMaxEncodedPayload(limit int) int {
 	return low
 }
 
-func run(privkey []byte, domain dns.Name, upstream string, dnsConn net.PacketConn, fallbackAddr *net.UDPAddr) error {
+func run(privkey []byte, domain dns.Name, upstream string, dnsConn net.PacketConn, fallbackAddr *net.UDPAddr, idleTimeout time.Duration, keepAlive time.Duration) error {
 	defer dnsConn.Close()
 
 	log.Infof("pubkey %x", noise.PubkeyFromPrivkey(privkey))
@@ -949,7 +950,7 @@ func run(privkey []byte, domain dns.Name, upstream string, dnsConn net.PacketCon
 	}
 	defer ln.Close()
 	go func() {
-		err := acceptSessions(ln, privkey, mtu, upstream)
+		err := acceptSessions(ln, privkey, mtu, upstream, idleTimeout, keepAlive)
 		if err != nil {
 			log.Warnf("acceptSessions: %v", err)
 		}
@@ -995,6 +996,8 @@ func main() {
 	var pubkeyFilename string
 	var udpAddr string
 	var fallbackAddrString string
+	var idleTimeoutStr string
+	var keepAliveStr string
 
 	flag.Usage = func() {
 		fmt.Fprintf(flag.CommandLine.Output(), `Usage:
@@ -1018,6 +1021,8 @@ Example:
 	flag.StringVar(&fallbackAddrString, "fallback", "", "UDP endpoint to forward non-DNS packets to (e.g., 127.0.0.1:8888)")
 	flag.StringVar(&domainArg, "domain", "", "tunnel domain (e.g., t.example.com)")
 	flag.StringVar(&upstream, "upstream", "", "TCP address to forward tunneled connections to (e.g., 127.0.0.1:8000)")
+	flag.StringVar(&idleTimeoutStr, "idle-timeout", defaultIdleTimeout.String(), "session idle timeout duration (e.g. 10s, 1m)")
+	flag.StringVar(&keepAliveStr, "keepalive", defaultKeepAlive.String(), "keepalive ping interval (must be less than idle-timeout)")
 
 	var logLevel string
 	flag.StringVar(&logLevel, "log-level", "warning", "log level (debug, info, warning, error)")
@@ -1033,7 +1038,7 @@ Example:
 
 	if genKey {
 		// -gen-key mode.
-		if flag.NArg() != 0 || privkeyString != "" || udpAddr != "" || fallbackAddrString != "" || domainArg != "" || upstream != "" {
+		if flag.NArg() != 0 || privkeyString != "" || udpAddr != "" || fallbackAddrString != "" || domainArg != "" || upstream != "" || idleTimeoutStr != defaultIdleTimeout.String() || keepAliveStr != defaultKeepAlive.String() {
 			flag.Usage()
 			os.Exit(1)
 		}
@@ -1145,7 +1150,22 @@ Example:
 			}
 		}
 
-		err = run(privkey, domain, upstream, dnsConn, fallbackAddr)
+		idleTimeout, err := time.ParseDuration(idleTimeoutStr)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "invalid -idle-timeout: %v\n", err)
+			os.Exit(1)
+		}
+		keepAlive, err := time.ParseDuration(keepAliveStr)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "invalid -keepalive: %v\n", err)
+			os.Exit(1)
+		}
+		if keepAlive >= idleTimeout {
+			fmt.Fprintf(os.Stderr, "-keepalive (%s) must be less than -idle-timeout (%s)\n", keepAlive, idleTimeout)
+			os.Exit(1)
+		}
+
+		err = run(privkey, domain, upstream, dnsConn, fallbackAddr, idleTimeout, keepAlive)
 		if err != nil {
 			log.Fatalf("%v", err)
 		}

@@ -445,3 +445,27 @@ worth of queries) is allowed to handle transient spikes.
 ```
 $ ./dnstt-client -rps 50 -doh https://doh.example/dns-query -pubkey-file server.pub -domain t.example.com -listen 127.0.0.1:7000
 ```
+
+
+## Session keepalive (client and server)
+
+Both client and server support configurable session timeouts:
+
+  `-idle-timeout D`  Session idle timeout. Default: 10s.
+  `-keepalive D`     Keepalive ping interval. Default: 2s.
+                     Must be less than idle-timeout.
+
+These values should match between client and server. The keepalive
+interval controls how often smux sends pings to detect dead sessions.
+The idle timeout is how long a session survives without any data.
+
+  `-max-streams N`   Max concurrent streams per session (client only).
+                     Default: 256. Set to 0 for unlimited.
+
+The client automatically reconnects when a session dies. The local
+TCP listener remains open across reconnections.
+
+```
+$ ./dnstt-client -idle-timeout 30s -keepalive 5s -max-streams 128 -doh https://doh.example/dns-query -pubkey-file server.pub -domain t.example.com -listen 127.0.0.1:7000
+$ ./dnstt-server -idle-timeout 30s -keepalive 5s -udp :5300 -privkey-file server.key -domain t.example.com -upstream 127.0.0.1:8000
+```
