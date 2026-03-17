@@ -1,9 +1,16 @@
-dnstt-client/dnstt-client
-dnstt-server/dnstt-server
+vaydns-client/vaydns-client
+vaydns-client/dnstt-client
+vaydns-server/vaydns-server
+vaydns-server/dnstt-server
+
+# IDE
+.idea/
+.vscode/
 
 # AI Agents
 CLAUDE.md
 claude.md
+.claude/
 
 # Misc.
 temp/
