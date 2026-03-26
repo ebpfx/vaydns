@@ -425,7 +425,8 @@ End-to-end tests run the full tunnel stack in Docker containers. Requires Docker
 bash e2e/run-test.sh
 
 # Or individually
-bash e2e/tunnel/run.sh           # basic tunnel — fetch nginx page
+bash e2e/tunnel/run.sh           # basic tunnel (TXT, default)
+bash e2e/tunnel/run.sh cname     # tunnel with CNAME records
 bash e2e/socks-download/run.sh   # 10MB file download via SOCKS5
 bash e2e/recovery/run.sh         # server crash recovery
 ```

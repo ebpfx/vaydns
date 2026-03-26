@@ -12,7 +12,7 @@ services:
   keygen:
     build:
       context: ../..
-      dockerfile: e2e/Dockerfile
+      dockerfile: Dockerfile
     volumes:
       - keys:/keys
     command: >
@@ -35,7 +35,7 @@ services:
   server:
     build:
       context: ../..
-      dockerfile: e2e/Dockerfile
+      dockerfile: Dockerfile
     networks:
       dns-net:
         ipv4_address: 172.28.0.20
@@ -44,7 +44,7 @@ services:
       - keys:/keys
     command: >
       vaydns-server -udp :53 -privkey-file /keys/server.key
-      -domain t.example.com -upstream backend:80 -record-type aaaa
+      -domain t.example.com -upstream backend:80 ${RECORD_TYPE_FLAG:-}
     depends_on:
       keygen:
         condition: service_completed_successfully
@@ -54,14 +54,14 @@ services:
   client:
     build:
       context: ../..
-      dockerfile: e2e/Dockerfile
+      dockerfile: Dockerfile
     networks:
       - dns-net
     volumes:
       - keys:/keys
     command: >
       vaydns-client -udp 172.28.0.10:53 -pubkey-file /keys/server.pub
-      -domain t.example.com -listen 0.0.0.0:7000 -record-type aaaa
+      -domain t.example.com -listen 0.0.0.0:7000 ${RECORD_TYPE_FLAG:-}
     depends_on:
       server:
         condition: service_started

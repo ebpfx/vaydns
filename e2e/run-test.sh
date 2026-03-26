@@ -6,7 +6,21 @@ cd "$(dirname "$0")"
 failed=0
 total=0
 
-for test_dir in tunnel-txt tunnel-cname tunnel-a tunnel-aaaa tunnel-mx tunnel-ns tunnel-srv socks-download recovery; do
+for rt in txt cname a aaaa mx ns srv; do
+    total=$((total + 1))
+    echo ""
+    echo "========================================"
+    echo "  e2e/tunnel (record-type: $rt)"
+    echo "========================================"
+    if bash tunnel/run.sh "$rt"; then
+        echo ""
+    else
+        echo ""
+        failed=$((failed + 1))
+    fi
+done
+
+for test_dir in socks-download recovery; do
     total=$((total + 1))
     echo ""
     echo "========================================"
