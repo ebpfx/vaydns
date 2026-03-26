@@ -102,9 +102,6 @@ func (c *UDPPacketConn) sendRecv(p []byte) {
 			rcode := resp.Flags & 0x000f
 			if c.ignoreErrors {
 				c.forgedStats.Record(rcode)
-				// Reset the deadline so forged responses don't eat
-				// into the timeout budget for the real response.
-				conn.SetReadDeadline(time.Now().Add(c.responseTimeout))
 				continue
 			}
 			// Pass it through — dns.go recvLoop will drop it as a safety net.
