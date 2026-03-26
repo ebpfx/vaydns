@@ -15,6 +15,7 @@ import (
 
 	log "github.com/sirupsen/logrus"
 	"github.com/net2share/vaydns/client"
+	"github.com/net2share/vaydns/dns"
 	"github.com/net2share/vaydns/noise"
 )
 
@@ -52,6 +53,7 @@ func main() {
 	var udpAcceptErrors bool
 	var compatDnstt bool
 	var clientIDSize int
+	var recordTypeStr string
 
 	flag.Usage = func() {
 		fmt.Fprintf(flag.CommandLine.Output(), `Usage:
@@ -111,6 +113,7 @@ Known TLS fingerprints for -utls are:
 	flag.BoolVar(&udpAcceptErrors, "udp-accept-errors", false, "accept DNS error responses instead of filtering them (disables censorship evasion)")
 	flag.BoolVar(&compatDnstt, "dnstt-compat", false, "use original dnstt wire format (8-byte ClientID, padding prefixes)")
 	flag.IntVar(&clientIDSize, "clientid-size", 2, "client ID size in bytes (ignored when -dnstt-compat is set)")
+	flag.StringVar(&recordTypeStr, "record-type", "txt", "DNS record type for downstream data (txt, cname, a, aaaa, mx, ns, srv)")
 
 	var logLevel string
 	flag.StringVar(&logLevel, "log-level", "warning", "log level (debug, info, warning, error)")
@@ -138,6 +141,13 @@ Known TLS fingerprints for -utls are:
 		os.Exit(1)
 	}
 	log.Infof("using domain: %s", domainArg)
+
+	if _, err := dns.ParseRecordType(recordTypeStr); err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		os.Exit(1)
+	}
+	recordTypeStr = strings.ToLower(recordTypeStr)
+	log.Infof("record type: %s", recordTypeStr)
 
 	// Resolve public key.
 	var pubkeyHex string
@@ -258,6 +268,10 @@ Known TLS fingerprints for -utls are:
 
 	// Apply -dnstt-compat overrides.
 	if compatDnstt {
+		if recordTypeStr != "txt" {
+			log.Warnf("-dnstt-compat forces record-type to txt; ignoring -record-type %s", recordTypeStr)
+			recordTypeStr = "txt"
+		}
 		explicitFlags := make(map[string]bool)
 		flag.Visit(func(f *flag.Flag) {
 			explicitFlags[f.Name] = true
@@ -308,6 +322,7 @@ Known TLS fingerprints for -utls are:
 	ts.MaxQnameLen = maxQnameLen
 	ts.MaxNumLabels = maxNumLabels
 	ts.RPS = rpsLimit
+	ts.RecordType = recordTypeStr
 
 	// Build tunnel.
 	tunnel, err := client.NewTunnel(resolver, ts)

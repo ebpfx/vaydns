@@ -127,6 +127,10 @@ type TunnelServer struct {
 
 	// RPS limits outgoing DNS queries per second (default: 0 = unlimited).
 	RPS float64
+
+	// RecordType selects the DNS record type for downstream data.
+	// Supported values: "txt" (default), "cname", "a", "aaaa", "mx", "ns", "srv".
+	RecordType string
 }
 
 // NewTunnelServer creates a TunnelServer from a domain string and hex-encoded
@@ -159,6 +163,15 @@ func (ts *TunnelServer) wireConfig() turbotunnel.WireConfig {
 		size = 2
 	}
 	return turbotunnel.WireConfig{ClientIDSize: size}
+}
+
+// effectiveRRType returns the DNS RR type for downstream data.
+func (ts *TunnelServer) effectiveRRType() uint16 {
+	rt, err := dns.ParseRecordType(ts.RecordType)
+	if err != nil {
+		return dns.RRTypeTXT
+	}
+	return rt
 }
 
 // effectiveMaxQnameLen returns the max QNAME length, applying dnstt defaults.
@@ -329,7 +342,8 @@ func (t *Tunnel) InitiateDNSPacketConn(domain dns.Name) error {
 		rateLimiter = NewRateLimiter(t.TunnelServer.RPS)
 	}
 	maxQnameLen := t.TunnelServer.effectiveMaxQnameLen()
-	t.dnsPacketConn = NewDNSPacketConn(t.resolverConn, t.remoteAddr, domain, rateLimiter, maxQnameLen, t.TunnelServer.MaxNumLabels, t.wireConfig, t.forgedStats)
+	rrType := t.TunnelServer.effectiveRRType()
+	t.dnsPacketConn = NewDNSPacketConn(t.resolverConn, t.remoteAddr, domain, rateLimiter, maxQnameLen, t.TunnelServer.MaxNumLabels, t.wireConfig, t.forgedStats, rrType)
 	return nil
 }
 
