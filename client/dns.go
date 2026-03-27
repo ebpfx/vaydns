@@ -172,6 +172,12 @@ type DNSPacketConn struct {
 // forgedStats is shared with the transport layer (e.g. UDPPacketConn) for
 // consistent forged response tracking; if nil, a new instance is created.
 func NewDNSPacketConn(transport net.PacketConn, addr net.Addr, domain dns.Name, rateLimiter *RateLimiter, maxQnameLen int, maxNumLabels int, wireConfig turbotunnel.WireConfig, forgedStats *ForgedStats, rrType uint16) *DNSPacketConn {
+	return NewDNSPacketConnWithQueueSize(transport, addr, domain, rateLimiter, maxQnameLen, maxNumLabels, wireConfig, forgedStats, rrType, turbotunnel.DefaultQueueSize)
+}
+
+// NewDNSPacketConnWithQueueSize is like NewDNSPacketConn but allows
+// configuring the packet queue size used between DNS and KCP layers.
+func NewDNSPacketConnWithQueueSize(transport net.PacketConn, addr net.Addr, domain dns.Name, rateLimiter *RateLimiter, maxQnameLen int, maxNumLabels int, wireConfig turbotunnel.WireConfig, forgedStats *ForgedStats, rrType uint16, queueSize int) *DNSPacketConn {
 	if maxQnameLen <= 0 || maxQnameLen > 253 {
 		maxQnameLen = 253
 	}
@@ -194,26 +200,36 @@ func NewDNSPacketConn(transport net.PacketConn, addr net.Addr, domain dns.Name, 
 		maxNumLabels:    maxNumLabels,
 		forgedStats:     forgedStats,
 		transportErr:    make(chan error, 2),
-		QueuePacketConn: turbotunnel.NewQueuePacketConn(clientID, 0),
+		QueuePacketConn: turbotunnel.NewQueuePacketConnWithSize(clientID, 0, queueSize),
 	}
 	go func() {
 		err := c.recvLoop(transport)
+		select {
+		case <-c.QueuePacketConn.Closed():
+			return
+		default:
+		}
 		if err != nil {
 			log.Errorf("recvLoop: %v", err)
-		}
-		select {
-		case c.transportErr <- fmt.Errorf("recvLoop: %w", err):
-		default:
+			select {
+			case c.transportErr <- fmt.Errorf("recvLoop: %w", err):
+			default:
+			}
 		}
 	}()
 	go func() {
 		err := c.sendLoop(transport, addr)
+		select {
+		case <-c.QueuePacketConn.Closed():
+			return
+		default:
+		}
 		if err != nil {
 			log.Errorf("sendLoop: %v", err)
-		}
-		select {
-		case c.transportErr <- fmt.Errorf("sendLoop: %w", err):
-		default:
+			select {
+			case c.transportErr <- fmt.Errorf("sendLoop: %w", err):
+			default:
+			}
 		}
 	}()
 	return c
@@ -523,16 +539,22 @@ func (c *DNSPacketConn) send(transport net.PacketConn, p []byte, addr net.Addr) 
 func (c *DNSPacketConn) sendLoop(transport net.PacketConn, addr net.Addr) error {
 	pollDelay := initPollDelay
 	pollTimer := time.NewTimer(pollDelay)
+	defer pollTimer.Stop()
+	outgoing := c.QueuePacketConn.OutgoingQueue(addr)
+	closed := c.QueuePacketConn.Closed()
 	for {
 		var p []byte
-		outgoing := c.QueuePacketConn.OutgoingQueue(addr)
 		pollTimerExpired := false
 		// Prioritize sending an actual data packet from outgoing. Only
 		// consider a poll when outgoing is empty.
 		select {
+		case <-closed:
+			return nil
 		case p = <-outgoing:
 		default:
 			select {
+			case <-closed:
+				return nil
 			case p = <-outgoing:
 			case <-c.pollChan:
 			case <-pollTimer.C:
@@ -571,10 +593,18 @@ func (c *DNSPacketConn) sendLoop(transport net.PacketConn, addr net.Addr) error 
 		// the data capacity of queries is so limited, it's not worth
 		// trying to send more than one packet per query.
 		c.rateLimiter.Wait()
+		select {
+		case <-closed:
+			return nil
+		default:
+		}
 		err := c.send(transport, p, addr)
 		if err != nil {
-			log.Errorf("send: %v", err)
-			continue
+			if err, ok := err.(net.Error); ok && err.Temporary() {
+				log.Warnf("send temporary error: %v", err)
+				continue
+			}
+			return err
 		}
 	}
 }

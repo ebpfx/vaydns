@@ -59,13 +59,19 @@ type HTTPPacketConn struct {
 // path components; e.g., "/dns-query". numSenders is the number of concurrent
 // sender-receiver goroutines to run.
 func NewHTTPPacketConn(rt http.RoundTripper, urlString string, numSenders int) (*HTTPPacketConn, error) {
+	return NewHTTPPacketConnWithQueueSize(rt, urlString, numSenders, turbotunnel.DefaultQueueSize)
+}
+
+// NewHTTPPacketConnWithQueueSize is like NewHTTPPacketConn but allows
+// configuring the transport queue size.
+func NewHTTPPacketConnWithQueueSize(rt http.RoundTripper, urlString string, numSenders int, queueSize int) (*HTTPPacketConn, error) {
 	c := &HTTPPacketConn{
 		client: &http.Client{
 			Transport: rt,
 			Timeout:   1 * time.Minute,
 		},
 		urlString:       urlString,
-		QueuePacketConn: turbotunnel.NewQueuePacketConn(turbotunnel.DummyAddr{}, 0),
+		QueuePacketConn: turbotunnel.NewQueuePacketConnWithSize(turbotunnel.DummyAddr{}, 0, queueSize),
 	}
 	for i := 0; i < numSenders; i++ {
 		go c.sendLoop()

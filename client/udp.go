@@ -37,6 +37,12 @@ type UDPPacketConn struct {
 // ForgedStats pointer is shared with the caller so DNSPacketConn can
 // include per-query forged counts in its reporting.
 func NewUDPPacketConn(remoteAddr net.Addr, dialerControl func(network, address string, c syscall.RawConn) error, numWorkers int, responseTimeout time.Duration, ignoreErrors bool) (*UDPPacketConn, *ForgedStats, error) {
+	return NewUDPPacketConnWithQueueSize(remoteAddr, dialerControl, numWorkers, responseTimeout, ignoreErrors, turbotunnel.DefaultQueueSize)
+}
+
+// NewUDPPacketConnWithQueueSize is like NewUDPPacketConn but allows
+// configuring the transport queue size.
+func NewUDPPacketConnWithQueueSize(remoteAddr net.Addr, dialerControl func(network, address string, c syscall.RawConn) error, numWorkers int, responseTimeout time.Duration, ignoreErrors bool, queueSize int) (*UDPPacketConn, *ForgedStats, error) {
 	stats := &ForgedStats{}
 	pconn := &UDPPacketConn{
 		remoteAddr:      remoteAddr,
@@ -44,7 +50,7 @@ func NewUDPPacketConn(remoteAddr net.Addr, dialerControl func(network, address s
 		responseTimeout: responseTimeout,
 		ignoreErrors:    ignoreErrors,
 		forgedStats:     stats,
-		QueuePacketConn: turbotunnel.NewQueuePacketConn(remoteAddr, 0),
+		QueuePacketConn: turbotunnel.NewQueuePacketConnWithSize(remoteAddr, 0, queueSize),
 	}
 	for i := 0; i < numWorkers; i++ {
 		go pconn.sendLoop()
@@ -63,10 +69,24 @@ func (c *UDPPacketConn) sendLoop() {
 		maxBackoff  = 5 * time.Second
 	)
 	backoff := initBackoff
+	outgoing := c.OutgoingQueue(c.remoteAddr)
+	closed := c.Closed()
 
-	for p := range c.OutgoingQueue(c.remoteAddr) {
+	for {
+		var p []byte
+		select {
+		case <-closed:
+			return
+		case p = <-outgoing:
+		}
 		if err := c.sendRecv(p); err != nil {
-			time.Sleep(backoff)
+			timer := time.NewTimer(backoff)
+			select {
+			case <-closed:
+				timer.Stop()
+				return
+			case <-timer.C:
+			}
 			backoff *= 2
 			if backoff > maxBackoff {
 				backoff = maxBackoff

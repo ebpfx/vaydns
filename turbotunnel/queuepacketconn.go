@@ -45,10 +45,19 @@ type QueuePacketConn struct {
 // NewQueuePacketConn makes a new QueuePacketConn, set to track recent peers
 // for at least a duration of timeout.
 func NewQueuePacketConn(localAddr net.Addr, timeout time.Duration) *QueuePacketConn {
+	return NewQueuePacketConnWithSize(localAddr, timeout, DefaultQueueSize)
+}
+
+// NewQueuePacketConnWithSize makes a new QueuePacketConn with a specific queue
+// size, set to track recent peers for at least a duration of timeout.
+func NewQueuePacketConnWithSize(localAddr net.Addr, timeout time.Duration, queueSize int) *QueuePacketConn {
+	if queueSize <= 0 {
+		queueSize = DefaultQueueSize
+	}
 	return &QueuePacketConn{
-		remotes:   NewRemoteMap(timeout),
+		remotes:   NewRemoteMap(timeout, queueSize),
 		localAddr: localAddr,
-		recvQueue: make(chan taggedPacket, QueueSize),
+		recvQueue: make(chan taggedPacket, queueSize),
 		closed:    make(chan struct{}),
 	}
 }
@@ -66,9 +75,9 @@ func (c *QueuePacketConn) QueueIncoming(p []byte, addr net.Addr) {
 	buf := make([]byte, len(p))
 	copy(buf, p)
 	select {
+	case <-c.closed:
+		return
 	case c.recvQueue <- taggedPacket{buf, addr}:
-	default:
-		// Drop the incoming packet if the receive queue is full.
 	}
 }
 
@@ -119,12 +128,17 @@ func (c *QueuePacketConn) WriteTo(p []byte, addr net.Addr) (int, error) {
 	// Copy the slice so that the caller may reuse it.
 	buf := make([]byte, len(p))
 	copy(buf, p)
-	select {
-	case c.remotes.SendQueue(addr) <- buf:
-		return len(buf), nil
-	default:
-		// Drop the outgoing packet if the send queue is full.
-		return len(buf), nil
+	for {
+		record := c.remotes.lookup(addr)
+		select {
+		case <-c.closed:
+			return 0, &net.OpError{Op: "write", Net: c.LocalAddr().Network(), Addr: c.LocalAddr(), Err: c.err.Load().(error)}
+		case <-record.Closed:
+			// Retry on a fresh queue if this remote expired while we were waiting.
+			continue
+		case record.SendQueue <- buf:
+			return len(buf), nil
+		}
 	}
 }
 
@@ -153,6 +167,9 @@ func (c *QueuePacketConn) closeWithError(err error) error {
 func (c *QueuePacketConn) Close() error {
 	return c.closeWithError(nil)
 }
+
+// Closed returns a channel that is closed when the QueuePacketConn is closed.
+func (c *QueuePacketConn) Closed() <-chan struct{} { return c.closed }
 
 // LocalAddr returns the localAddr value that was passed to NewQueuePacketConn.
 func (c *QueuePacketConn) LocalAddr() net.Addr { return c.localAddr }

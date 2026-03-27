@@ -6,9 +6,12 @@ package turbotunnel
 
 import "errors"
 
-// QueueSize is the size of send and receive queues in QueuePacketConn and
-// RemoteMap.
-const QueueSize = 128
+// DefaultQueueSize is the default size of send and receive queues in
+// QueuePacketConn and RemoteMap.
+const DefaultQueueSize = 1024
+
+// QueueSize is kept as an alias for the default queue size.
+const QueueSize = DefaultQueueSize
 
 var errClosedPacketConn = errors.New("operation on closed connection")
 var errNotImplemented = errors.New("not implemented")

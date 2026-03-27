@@ -37,6 +37,12 @@ type TLSPacketConn struct {
 // the resolver, reconnecting as necessary. It closes the connection if any
 // reconnection attempt fails.
 func NewTLSPacketConn(addr string, dialTLSContext func(ctx context.Context, network, addr string) (net.Conn, error)) (*TLSPacketConn, error) {
+	return NewTLSPacketConnWithQueueSize(addr, dialTLSContext, turbotunnel.DefaultQueueSize)
+}
+
+// NewTLSPacketConnWithQueueSize is like NewTLSPacketConn but allows
+// configuring the transport queue size.
+func NewTLSPacketConnWithQueueSize(addr string, dialTLSContext func(ctx context.Context, network, addr string) (net.Conn, error), queueSize int) (*TLSPacketConn, error) {
 	dial := func() (net.Conn, error) {
 		ctx, cancel := context.WithTimeout(context.Background(), dialTimeout)
 		defer cancel()
@@ -51,7 +57,7 @@ func NewTLSPacketConn(addr string, dialTLSContext func(ctx context.Context, netw
 		return nil, err
 	}
 	c := &TLSPacketConn{
-		QueuePacketConn: turbotunnel.NewQueuePacketConn(turbotunnel.DummyAddr{}, 0),
+		QueuePacketConn: turbotunnel.NewQueuePacketConnWithSize(turbotunnel.DummyAddr{}, 0, queueSize),
 	}
 	go func() {
 		defer c.Close()
