@@ -59,19 +59,27 @@ type HTTPPacketConn struct {
 // path components; e.g., "/dns-query". numSenders is the number of concurrent
 // sender-receiver goroutines to run.
 func NewHTTPPacketConn(rt http.RoundTripper, urlString string, numSenders int) (*HTTPPacketConn, error) {
-	return NewHTTPPacketConnWithQueueSize(rt, urlString, numSenders, turbotunnel.DefaultQueueSize)
+	return NewHTTPPacketConnWithQueueSize(rt, urlString, numSenders, turbotunnel.QueueSize)
 }
 
 // NewHTTPPacketConnWithQueueSize is like NewHTTPPacketConn but allows
 // configuring the transport queue size.
 func NewHTTPPacketConnWithQueueSize(rt http.RoundTripper, urlString string, numSenders int, queueSize int) (*HTTPPacketConn, error) {
+	return NewHTTPPacketConnWithQueueConfig(rt, urlString, numSenders, turbotunnel.QueuePacketConnConfig{
+		QueueSize: queueSize,
+	})
+}
+
+// NewHTTPPacketConnWithQueueConfig is like NewHTTPPacketConn but allows
+// configuring both queue size and overflow behavior.
+func NewHTTPPacketConnWithQueueConfig(rt http.RoundTripper, urlString string, numSenders int, queueConfig turbotunnel.QueuePacketConnConfig) (*HTTPPacketConn, error) {
 	c := &HTTPPacketConn{
 		client: &http.Client{
 			Transport: rt,
 			Timeout:   1 * time.Minute,
 		},
 		urlString:       urlString,
-		QueuePacketConn: turbotunnel.NewQueuePacketConnWithSize(turbotunnel.DummyAddr{}, 0, queueSize),
+		QueuePacketConn: turbotunnel.NewQueuePacketConnWithConfig(turbotunnel.DummyAddr{}, 0, queueConfig),
 	}
 	for i := 0; i < numSenders; i++ {
 		go c.sendLoop()
@@ -147,7 +155,15 @@ func (c *HTTPPacketConn) send(p []byte) error {
 // sendLoop loops over the contents of the outgoing queue and passes them to
 // send. It drops packets while c.notBefore is in the future.
 func (c *HTTPPacketConn) sendLoop() {
-	for p := range c.QueuePacketConn.OutgoingQueue(turbotunnel.DummyAddr{}) {
+	outgoing := c.QueuePacketConn.OutgoingQueue(turbotunnel.DummyAddr{})
+	closed := c.QueuePacketConn.Closed()
+	for {
+		var p []byte
+		select {
+		case <-closed:
+			return
+		case p = <-outgoing:
+		}
 		// Stop sending while we are rate-limiting ourselves (as a
 		// result of a Retry-After response header, for example).
 		c.notBeforeLock.RLock()

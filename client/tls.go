@@ -30,6 +30,8 @@ type TLSPacketConn struct {
 	// recvLoop and sendLoop take the messages out of the receive and send
 	// queues and actually put them on the network.
 	*turbotunnel.QueuePacketConn
+	connMu sync.Mutex
+	conn   net.Conn
 }
 
 // NewTLSPacketConn creates a new TLSPacketConn configured to use the TLS
@@ -37,12 +39,20 @@ type TLSPacketConn struct {
 // the resolver, reconnecting as necessary. It closes the connection if any
 // reconnection attempt fails.
 func NewTLSPacketConn(addr string, dialTLSContext func(ctx context.Context, network, addr string) (net.Conn, error)) (*TLSPacketConn, error) {
-	return NewTLSPacketConnWithQueueSize(addr, dialTLSContext, turbotunnel.DefaultQueueSize)
+	return NewTLSPacketConnWithQueueSize(addr, dialTLSContext, turbotunnel.QueueSize)
 }
 
 // NewTLSPacketConnWithQueueSize is like NewTLSPacketConn but allows
 // configuring the transport queue size.
 func NewTLSPacketConnWithQueueSize(addr string, dialTLSContext func(ctx context.Context, network, addr string) (net.Conn, error), queueSize int) (*TLSPacketConn, error) {
+	return NewTLSPacketConnWithQueueConfig(addr, dialTLSContext, turbotunnel.QueuePacketConnConfig{
+		QueueSize: queueSize,
+	})
+}
+
+// NewTLSPacketConnWithQueueConfig is like NewTLSPacketConn but allows
+// configuring both queue size and overflow behavior.
+func NewTLSPacketConnWithQueueConfig(addr string, dialTLSContext func(ctx context.Context, network, addr string) (net.Conn, error), queueConfig turbotunnel.QueuePacketConnConfig) (*TLSPacketConn, error) {
 	dial := func() (net.Conn, error) {
 		ctx, cancel := context.WithTimeout(context.Background(), dialTimeout)
 		defer cancel()
@@ -57,8 +67,9 @@ func NewTLSPacketConnWithQueueSize(addr string, dialTLSContext func(ctx context.
 		return nil, err
 	}
 	c := &TLSPacketConn{
-		QueuePacketConn: turbotunnel.NewQueuePacketConnWithSize(turbotunnel.DummyAddr{}, 0, queueSize),
+		QueuePacketConn: turbotunnel.NewQueuePacketConnWithConfig(turbotunnel.DummyAddr{}, 0, queueConfig),
 	}
+	c.setConn(conn)
 	go func() {
 		defer c.Close()
 		for {
@@ -79,7 +90,13 @@ func NewTLSPacketConnWithQueueSize(addr string, dialTLSContext func(ctx context.
 				wg.Done()
 			}()
 			wg.Wait()
+			c.clearConn(conn)
 			conn.Close()
+			select {
+			case <-c.Closed():
+				return
+			default:
+			}
 
 			// Whenever the TLS connection dies, redial a new one.
 			conn, err = dial()
@@ -87,9 +104,46 @@ func NewTLSPacketConnWithQueueSize(addr string, dialTLSContext func(ctx context.
 				log.Errorf("dial tls: %v", err)
 				break
 			}
+			select {
+			case <-c.Closed():
+				conn.Close()
+				return
+			default:
+			}
+			c.setConn(conn)
 		}
 	}()
 	return c, nil
+}
+
+func (c *TLSPacketConn) setConn(conn net.Conn) {
+	c.connMu.Lock()
+	c.conn = conn
+	c.connMu.Unlock()
+}
+
+func (c *TLSPacketConn) clearConn(conn net.Conn) {
+	c.connMu.Lock()
+	if c.conn == conn {
+		c.conn = nil
+	}
+	c.connMu.Unlock()
+}
+
+func (c *TLSPacketConn) closeCurrentConn() {
+	c.connMu.Lock()
+	conn := c.conn
+	c.conn = nil
+	c.connMu.Unlock()
+	if conn != nil {
+		conn.Close()
+	}
+}
+
+// Close tears down both the packet queue and any active TLS connection.
+func (c *TLSPacketConn) Close() error {
+	c.closeCurrentConn()
+	return c.QueuePacketConn.Close()
 }
 
 // recvLoop reads length-prefixed messages from conn and passes them to the
@@ -118,7 +172,15 @@ func (c *TLSPacketConn) recvLoop(conn net.Conn) error {
 // length-prefixed, to conn.
 func (c *TLSPacketConn) sendLoop(conn net.Conn) error {
 	bw := bufio.NewWriter(conn)
-	for p := range c.QueuePacketConn.OutgoingQueue(turbotunnel.DummyAddr{}) {
+	outgoing := c.QueuePacketConn.OutgoingQueue(turbotunnel.DummyAddr{})
+	closed := c.QueuePacketConn.Closed()
+	for {
+		var p []byte
+		select {
+		case <-closed:
+			return nil
+		case p = <-outgoing:
+		}
 		length := uint16(len(p))
 		if int(length) != len(p) {
 			panic(len(p))
@@ -136,5 +198,4 @@ func (c *TLSPacketConn) sendLoop(conn net.Conn) error {
 			return err
 		}
 	}
-	return nil
 }

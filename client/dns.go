@@ -172,12 +172,20 @@ type DNSPacketConn struct {
 // forgedStats is shared with the transport layer (e.g. UDPPacketConn) for
 // consistent forged response tracking; if nil, a new instance is created.
 func NewDNSPacketConn(transport net.PacketConn, addr net.Addr, domain dns.Name, rateLimiter *RateLimiter, maxQnameLen int, maxNumLabels int, wireConfig turbotunnel.WireConfig, forgedStats *ForgedStats, rrType uint16) *DNSPacketConn {
-	return NewDNSPacketConnWithQueueSize(transport, addr, domain, rateLimiter, maxQnameLen, maxNumLabels, wireConfig, forgedStats, rrType, turbotunnel.DefaultQueueSize)
+	return NewDNSPacketConnWithQueueSize(transport, addr, domain, rateLimiter, maxQnameLen, maxNumLabels, wireConfig, forgedStats, rrType, turbotunnel.QueueSize)
 }
 
 // NewDNSPacketConnWithQueueSize is like NewDNSPacketConn but allows
 // configuring the packet queue size used between DNS and KCP layers.
 func NewDNSPacketConnWithQueueSize(transport net.PacketConn, addr net.Addr, domain dns.Name, rateLimiter *RateLimiter, maxQnameLen int, maxNumLabels int, wireConfig turbotunnel.WireConfig, forgedStats *ForgedStats, rrType uint16, queueSize int) *DNSPacketConn {
+	return NewDNSPacketConnWithQueueConfig(transport, addr, domain, rateLimiter, maxQnameLen, maxNumLabels, wireConfig, forgedStats, rrType, turbotunnel.QueuePacketConnConfig{
+		QueueSize: queueSize,
+	})
+}
+
+// NewDNSPacketConnWithQueueConfig is like NewDNSPacketConn but allows
+// configuring both queue size and overflow behavior.
+func NewDNSPacketConnWithQueueConfig(transport net.PacketConn, addr net.Addr, domain dns.Name, rateLimiter *RateLimiter, maxQnameLen int, maxNumLabels int, wireConfig turbotunnel.WireConfig, forgedStats *ForgedStats, rrType uint16, queueConfig turbotunnel.QueuePacketConnConfig) *DNSPacketConn {
 	if maxQnameLen <= 0 || maxQnameLen > 253 {
 		maxQnameLen = 253
 	}
@@ -200,7 +208,7 @@ func NewDNSPacketConnWithQueueSize(transport net.PacketConn, addr net.Addr, doma
 		maxNumLabels:    maxNumLabels,
 		forgedStats:     forgedStats,
 		transportErr:    make(chan error, 2),
-		QueuePacketConn: turbotunnel.NewQueuePacketConnWithSize(clientID, 0, queueSize),
+		QueuePacketConn: turbotunnel.NewQueuePacketConnWithConfig(clientID, 0, queueConfig),
 	}
 	go func() {
 		err := c.recvLoop(transport)

@@ -37,12 +37,20 @@ type UDPPacketConn struct {
 // ForgedStats pointer is shared with the caller so DNSPacketConn can
 // include per-query forged counts in its reporting.
 func NewUDPPacketConn(remoteAddr net.Addr, dialerControl func(network, address string, c syscall.RawConn) error, numWorkers int, responseTimeout time.Duration, ignoreErrors bool) (*UDPPacketConn, *ForgedStats, error) {
-	return NewUDPPacketConnWithQueueSize(remoteAddr, dialerControl, numWorkers, responseTimeout, ignoreErrors, turbotunnel.DefaultQueueSize)
+	return NewUDPPacketConnWithQueueSize(remoteAddr, dialerControl, numWorkers, responseTimeout, ignoreErrors, turbotunnel.QueueSize)
 }
 
 // NewUDPPacketConnWithQueueSize is like NewUDPPacketConn but allows
 // configuring the transport queue size.
 func NewUDPPacketConnWithQueueSize(remoteAddr net.Addr, dialerControl func(network, address string, c syscall.RawConn) error, numWorkers int, responseTimeout time.Duration, ignoreErrors bool, queueSize int) (*UDPPacketConn, *ForgedStats, error) {
+	return NewUDPPacketConnWithQueueConfig(remoteAddr, dialerControl, numWorkers, responseTimeout, ignoreErrors, turbotunnel.QueuePacketConnConfig{
+		QueueSize: queueSize,
+	})
+}
+
+// NewUDPPacketConnWithQueueConfig is like NewUDPPacketConn but allows
+// configuring both queue size and overflow behavior.
+func NewUDPPacketConnWithQueueConfig(remoteAddr net.Addr, dialerControl func(network, address string, c syscall.RawConn) error, numWorkers int, responseTimeout time.Duration, ignoreErrors bool, queueConfig turbotunnel.QueuePacketConnConfig) (*UDPPacketConn, *ForgedStats, error) {
 	stats := &ForgedStats{}
 	pconn := &UDPPacketConn{
 		remoteAddr:      remoteAddr,
@@ -50,7 +58,7 @@ func NewUDPPacketConnWithQueueSize(remoteAddr net.Addr, dialerControl func(netwo
 		responseTimeout: responseTimeout,
 		ignoreErrors:    ignoreErrors,
 		forgedStats:     stats,
-		QueuePacketConn: turbotunnel.NewQueuePacketConnWithSize(remoteAddr, 0, queueSize),
+		QueuePacketConn: turbotunnel.NewQueuePacketConnWithConfig(remoteAddr, 0, queueConfig),
 	}
 	for i := 0; i < numWorkers; i++ {
 		go pconn.sendLoop()

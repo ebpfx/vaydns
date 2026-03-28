@@ -54,7 +54,8 @@ const (
 )
 
 const (
-	DefaultPacketQueueSize = turbotunnel.DefaultQueueSize
+	DefaultPacketQueueSize   = turbotunnel.DefaultQueueSize
+	DefaultQueueOverflowMode = turbotunnel.DefaultQueueOverflowMode
 )
 
 // Default timeouts for dnstt compatibility mode.
@@ -198,16 +199,17 @@ type Tunnel struct {
 	TunnelServer TunnelServer
 
 	// Session configuration. Zero values use defaults.
-	IdleTimeout          time.Duration // default: 10s (2m with DnsttCompat)
-	KeepAlive            time.Duration // default: 2s (10s with DnsttCompat)
-	OpenStreamTimeout    time.Duration // default: 10s
-	MaxStreams           int           // default: 256 (0 = unlimited)
-	ReconnectMinDelay    time.Duration // default: 1s
-	ReconnectMaxDelay    time.Duration // default: 30s
-	SessionCheckInterval time.Duration // default: 20s
-	HandshakeTimeout     time.Duration // default: 30s
-	PacketQueueSize      int           // default: 1024
-	KCPWindowSize        int           // default: PacketQueueSize/2
+	IdleTimeout          time.Duration                 // default: 10s (2m with DnsttCompat)
+	KeepAlive            time.Duration                 // default: 2s (10s with DnsttCompat)
+	OpenStreamTimeout    time.Duration                 // default: 10s
+	MaxStreams           int                           // default: 256 (0 = unlimited)
+	ReconnectMinDelay    time.Duration                 // default: 1s
+	ReconnectMaxDelay    time.Duration                 // default: 30s
+	SessionCheckInterval time.Duration                 // default: 20s
+	HandshakeTimeout     time.Duration                 // default: 30s
+	PacketQueueSize      int                           // default: 1024
+	KCPWindowSize        int                           // default: PacketQueueSize/2
+	QueueOverflowMode    turbotunnel.QueueOverflowMode // default: drop
 
 	// internal state
 	wireConfig    turbotunnel.WireConfig
@@ -266,15 +268,6 @@ func (t *Tunnel) applyDefaults() {
 	if t.HandshakeTimeout == 0 {
 		t.HandshakeTimeout = DefaultHandshakeTimeout
 	}
-	if t.PacketQueueSize == 0 {
-		t.PacketQueueSize = DefaultPacketQueueSize
-	}
-	if t.KCPWindowSize == 0 {
-		t.KCPWindowSize = t.PacketQueueSize / 2
-		if t.KCPWindowSize < 1 {
-			t.KCPWindowSize = 1
-		}
-	}
 }
 
 func (t *Tunnel) effectivePacketQueueSize() int {
@@ -282,6 +275,20 @@ func (t *Tunnel) effectivePacketQueueSize() int {
 		return t.PacketQueueSize
 	}
 	return DefaultPacketQueueSize
+}
+
+func (t *Tunnel) effectiveQueueOverflowMode() turbotunnel.QueueOverflowMode {
+	if t.QueueOverflowMode != "" {
+		return t.QueueOverflowMode
+	}
+	return DefaultQueueOverflowMode
+}
+
+func (t *Tunnel) effectiveQueuePacketConnConfig() turbotunnel.QueuePacketConnConfig {
+	return turbotunnel.QueuePacketConnConfig{
+		QueueSize:    t.effectivePacketQueueSize(),
+		OverflowMode: t.effectiveQueueOverflowMode(),
+	}
 }
 
 func (t *Tunnel) effectiveKCPWindowSize() int {
@@ -299,7 +306,7 @@ func (t *Tunnel) effectiveKCPWindowSize() int {
 // based on the Resolver configuration.
 func (t *Tunnel) InitiateResolverConnection() error {
 	r := t.Resolver
-	queueSize := t.effectivePacketQueueSize()
+	queueConfig := t.effectiveQueuePacketConnConfig()
 	switch r.ResolverType {
 	case ResolverTypeUDP:
 		addr, err := net.ResolveUDPAddr("udp", r.ResolverAddr)
@@ -323,7 +330,7 @@ func (t *Tunnel) InitiateResolverConnection() error {
 			if timeout <= 0 {
 				timeout = DefaultUDPResponseTimeout
 			}
-			conn, forgedStats, err := NewUDPPacketConnWithQueueSize(addr, r.DialerControl, workers, timeout, !r.UDPAcceptErrors, queueSize)
+			conn, forgedStats, err := NewUDPPacketConnWithQueueConfig(addr, r.DialerControl, workers, timeout, !r.UDPAcceptErrors, queueConfig)
 			if err != nil {
 				return err
 			}
@@ -342,7 +349,7 @@ func (t *Tunnel) InitiateResolverConnection() error {
 		} else {
 			rt = http.DefaultTransport
 		}
-		conn, err := NewHTTPPacketConnWithQueueSize(rt, r.ResolverAddr, 8, queueSize)
+		conn, err := NewHTTPPacketConnWithQueueConfig(rt, r.ResolverAddr, 8, queueConfig)
 		if err != nil {
 			return err
 		}
@@ -362,7 +369,7 @@ func (t *Tunnel) InitiateResolverConnection() error {
 				return tls.DialWithDialer(&net.Dialer{}, network, addr, nil)
 			}
 		}
-		conn, err := NewTLSPacketConnWithQueueSize(r.ResolverAddr, dialTLSContext, queueSize)
+		conn, err := NewTLSPacketConnWithQueueConfig(r.ResolverAddr, dialTLSContext, queueConfig)
 		if err != nil {
 			return err
 		}
@@ -382,7 +389,7 @@ func (t *Tunnel) InitiateDNSPacketConn(domain dns.Name) error {
 	}
 	maxQnameLen := t.TunnelServer.effectiveMaxQnameLen()
 	rrType := t.TunnelServer.effectiveRRType()
-	t.dnsPacketConn = NewDNSPacketConnWithQueueSize(t.resolverConn, t.remoteAddr, domain, rateLimiter, maxQnameLen, t.TunnelServer.MaxNumLabels, t.wireConfig, t.forgedStats, rrType, t.effectivePacketQueueSize())
+	t.dnsPacketConn = NewDNSPacketConnWithQueueConfig(t.resolverConn, t.remoteAddr, domain, rateLimiter, maxQnameLen, t.TunnelServer.MaxNumLabels, t.wireConfig, t.forgedStats, rrType, t.effectiveQueuePacketConnConfig())
 	return nil
 }
 
@@ -710,9 +717,8 @@ func (t *Tunnel) ListenAndServe(listenAddr string) error {
 
 			localTCP := local.(*net.TCPConn)
 			sessRef := sess
-			connRef := conn
 			convRef := conv
-			go func(local *net.TCPConn, sess *smux.Session, conn *kcp.UDPSession, conv uint32) {
+			go func(local *net.TCPConn, sess *smux.Session, conv uint32) {
 				if sem != nil {
 					sem <- struct{}{}
 					defer func() { <-sem }()
@@ -722,7 +728,7 @@ func (t *Tunnel) ListenAndServe(listenAddr string) error {
 				if err != nil {
 					log.Warnf("handle: %v", err)
 				}
-			}(localTCP, sessRef, connRef, convRef)
+			}(localTCP, sessRef, convRef)
 		}
 
 		log.Warnf("session %08x closed, reconnecting", conv)

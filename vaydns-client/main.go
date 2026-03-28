@@ -13,11 +13,11 @@ import (
 	"strings"
 	"time"
 
-	log "github.com/sirupsen/logrus"
 	"github.com/net2share/vaydns/client"
 	"github.com/net2share/vaydns/dns"
 	"github.com/net2share/vaydns/noise"
 	"github.com/net2share/vaydns/turbotunnel"
+	log "github.com/sirupsen/logrus"
 )
 
 func readKeyFromFile(filename string) ([]byte, error) {
@@ -57,6 +57,7 @@ func main() {
 	var recordTypeStr string
 	var queueSize int
 	var kcpWindowSize int
+	var queueOverflowStr string
 
 	flag.Usage = func() {
 		fmt.Fprintf(flag.CommandLine.Output(), `Usage:
@@ -119,6 +120,7 @@ Known TLS fingerprints for -utls are:
 	flag.StringVar(&recordTypeStr, "record-type", "txt", "DNS record type for downstream data (txt, cname, a, aaaa, mx, ns, srv)")
 	flag.IntVar(&queueSize, "queue-size", turbotunnel.DefaultQueueSize, "packet queue size for transport and DNS layers")
 	flag.IntVar(&kcpWindowSize, "kcp-window-size", 0, "KCP send/receive window size in packets (0 = queue-size/2)")
+	flag.StringVar(&queueOverflowStr, "queue-overflow", string(turbotunnel.DefaultQueueOverflowMode), "queue overflow behavior: drop or block")
 
 	var logLevel string
 	flag.StringVar(&logLevel, "log-level", "warning", "log level (debug, info, warning, error)")
@@ -248,6 +250,11 @@ Known TLS fingerprints for -utls are:
 		fmt.Fprintf(os.Stderr, "invalid -udp-timeout: %v\n", err)
 		os.Exit(1)
 	}
+	queueOverflowMode, err := turbotunnel.ParseQueueOverflowMode(queueOverflowStr)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "invalid -queue-overflow: %v\n", err)
+		os.Exit(1)
+	}
 
 	// Validate.
 	if keepAlive >= idleTimeout {
@@ -363,7 +370,8 @@ Known TLS fingerprints for -utls are:
 	tunnel.SessionCheckInterval = sessionCheckInterval
 	tunnel.PacketQueueSize = queueSize
 	tunnel.KCPWindowSize = kcpWindowSize
-	log.Infof("transport sizing: queue-size=%d kcp-window-size=%d", queueSize, effectiveKCPWindowSize)
+	tunnel.QueueOverflowMode = queueOverflowMode
+	log.Infof("transport config: queue-size=%d kcp-window-size=%d queue-overflow=%s", queueSize, effectiveKCPWindowSize, queueOverflowMode)
 
 	if compatDnstt {
 		log.Infof("wire config: clientid-size=8 compat=true")

@@ -33,32 +33,67 @@ type taggedPacket struct {
 // packet has been stashed, it must be checked for by calling Unstash in
 // addition to OutgoingQueue.
 type QueuePacketConn struct {
-	remotes   *RemoteMap
-	localAddr net.Addr
-	recvQueue chan taggedPacket
-	closeOnce sync.Once
-	closed    chan struct{}
+	remotes      *RemoteMap
+	localAddr    net.Addr
+	recvQueue    chan taggedPacket
+	overflowMode QueueOverflowMode
+	closeOnce    sync.Once
+	closed       chan struct{}
 	// What error to return when the QueuePacketConn is closed.
 	err atomic.Value
+}
+
+type writeOutgoingResult int
+
+const (
+	writeOutgoingDropped writeOutgoingResult = iota
+	writeOutgoingSent
+	writeOutgoingRetry
+	writeOutgoingConnClosed
+)
+
+// QueuePacketConnConfig controls QueuePacketConn sizing and overflow behavior.
+type QueuePacketConnConfig struct {
+	QueueSize    int
+	OverflowMode QueueOverflowMode
+}
+
+func (cfg QueuePacketConnConfig) withDefaults() QueuePacketConnConfig {
+	if cfg.QueueSize <= 0 {
+		cfg.QueueSize = DefaultQueueSize
+	}
+	// Keep low-level config permissive for backward compatibility: empty or
+	// unknown overflow modes fall back to the original lossy behavior.
+	if cfg.OverflowMode != QueueOverflowBlock {
+		cfg.OverflowMode = DefaultQueueOverflowMode
+	}
+	return cfg
 }
 
 // NewQueuePacketConn makes a new QueuePacketConn, set to track recent peers
 // for at least a duration of timeout.
 func NewQueuePacketConn(localAddr net.Addr, timeout time.Duration) *QueuePacketConn {
-	return NewQueuePacketConnWithSize(localAddr, timeout, DefaultQueueSize)
+	return NewQueuePacketConnWithSize(localAddr, timeout, QueueSize)
 }
 
 // NewQueuePacketConnWithSize makes a new QueuePacketConn with a specific queue
 // size, set to track recent peers for at least a duration of timeout.
 func NewQueuePacketConnWithSize(localAddr net.Addr, timeout time.Duration, queueSize int) *QueuePacketConn {
-	if queueSize <= 0 {
-		queueSize = DefaultQueueSize
-	}
+	return NewQueuePacketConnWithConfig(localAddr, timeout, QueuePacketConnConfig{
+		QueueSize: queueSize,
+	})
+}
+
+// NewQueuePacketConnWithConfig makes a new QueuePacketConn with the given queue
+// configuration, set to track recent peers for at least a duration of timeout.
+func NewQueuePacketConnWithConfig(localAddr net.Addr, timeout time.Duration, cfg QueuePacketConnConfig) *QueuePacketConn {
+	cfg = cfg.withDefaults()
 	return &QueuePacketConn{
-		remotes:   NewRemoteMap(timeout, queueSize),
-		localAddr: localAddr,
-		recvQueue: make(chan taggedPacket, queueSize),
-		closed:    make(chan struct{}),
+		remotes:      NewRemoteMap(timeout, cfg.QueueSize),
+		localAddr:    localAddr,
+		recvQueue:    make(chan taggedPacket, cfg.QueueSize),
+		overflowMode: cfg.OverflowMode,
+		closed:       make(chan struct{}),
 	}
 }
 
@@ -74,10 +109,20 @@ func (c *QueuePacketConn) QueueIncoming(p []byte, addr net.Addr) {
 	// Copy the slice so that the caller may reuse it.
 	buf := make([]byte, len(p))
 	copy(buf, p)
+	if c.overflowMode == QueueOverflowBlock {
+		select {
+		case <-c.closed:
+			return
+		case c.recvQueue <- taggedPacket{buf, addr}:
+		}
+		return
+	}
 	select {
 	case <-c.closed:
 		return
 	case c.recvQueue <- taggedPacket{buf, addr}:
+	default:
+		// Drop the incoming packet if the receive queue is full.
 	}
 }
 
@@ -130,15 +175,45 @@ func (c *QueuePacketConn) WriteTo(p []byte, addr net.Addr) (int, error) {
 	copy(buf, p)
 	for {
 		record := c.remotes.lookup(addr)
-		select {
-		case <-c.closed:
+		switch c.writeOutgoing(record, buf) {
+		case writeOutgoingConnClosed:
 			return 0, &net.OpError{Op: "write", Net: c.LocalAddr().Network(), Addr: c.LocalAddr(), Err: c.err.Load().(error)}
-		case <-record.Closed:
-			// Retry on a fresh queue if this remote expired while we were waiting.
+		case writeOutgoingRetry:
+			// The remote queue expired while we were selecting, so look up a fresh
+			// queue and try again.
 			continue
-		case record.SendQueue <- buf:
+		case writeOutgoingSent:
+			return len(buf), nil
+		case writeOutgoingDropped:
+			// Drop the outgoing packet if the send queue is full.
 			return len(buf), nil
 		}
+	}
+}
+
+// writeOutgoing writes buf to record.SendQueue according to the configured
+// overflow mode.
+func (c *QueuePacketConn) writeOutgoing(record *remoteRecord, buf []byte) writeOutgoingResult {
+	record.sendMu.Lock()
+	defer record.sendMu.Unlock()
+	if record.expired {
+		return writeOutgoingRetry
+	}
+	if c.overflowMode == QueueOverflowBlock {
+		select {
+		case <-c.closed:
+			return writeOutgoingConnClosed
+		case record.SendQueue <- buf:
+			return writeOutgoingSent
+		}
+	}
+	select {
+	case <-c.closed:
+		return writeOutgoingConnClosed
+	case record.SendQueue <- buf:
+		return writeOutgoingSent
+	default:
+		return writeOutgoingDropped
 	}
 }
 

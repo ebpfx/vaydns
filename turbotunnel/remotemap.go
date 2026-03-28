@@ -14,7 +14,8 @@ type remoteRecord struct {
 	LastSeen  time.Time
 	SendQueue chan []byte
 	Stash     chan []byte
-	Closed    chan struct{}
+	sendMu    sync.Mutex
+	expired   bool
 }
 
 // RemoteMap manages a mapping of live remote peers, keyed by address, to their
@@ -45,16 +46,24 @@ type RemoteMap struct {
 // time. If smux later decides to send more packets to the same peer, we'll
 // instantiate a new send queue, and if the peer is ever seen again with a
 // matching address, we'll deliver them.
-func NewRemoteMap(timeout time.Duration, queueSize int) *RemoteMap {
-	if queueSize <= 0 {
-		queueSize = DefaultQueueSize
+//
+// queueSize is optional for backward compatibility; when omitted, the historical
+// QueueSize default is used. When explicitly provided as non-positive,
+// DefaultQueueSize is used.
+func NewRemoteMap(timeout time.Duration, queueSize ...int) *RemoteMap {
+	size := QueueSize
+	if len(queueSize) > 0 {
+		size = queueSize[0]
+		if size <= 0 {
+			size = DefaultQueueSize
+		}
 	}
 	m := &RemoteMap{
 		inner: remoteMapInner{
 			byAge:  make([]*remoteRecord, 0),
 			byAddr: make(map[net.Addr]int),
 		},
-		queueSize: queueSize,
+		queueSize: size,
 	}
 	if timeout > 0 {
 		go func() {
@@ -122,7 +131,10 @@ type remoteMapInner struct {
 func (inner *remoteMapInner) removeExpired(now time.Time, timeout time.Duration) {
 	for len(inner.byAge) > 0 && now.Sub(inner.byAge[0].LastSeen) >= timeout {
 		record := heap.Pop(inner).(*remoteRecord)
-		close(record.Closed)
+		record.sendMu.Lock()
+		record.expired = true
+		close(record.SendQueue)
+		record.sendMu.Unlock()
 	}
 }
 
@@ -144,7 +156,6 @@ func (inner *remoteMapInner) Lookup(addr net.Addr, now time.Time, queueSize int)
 			LastSeen:  now,
 			SendQueue: make(chan []byte, queueSize),
 			Stash:     make(chan []byte, 1),
-			Closed:    make(chan struct{}),
 		}
 		heap.Push(inner, record)
 	}
