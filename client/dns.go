@@ -99,10 +99,10 @@ func (rl *RateLimiter) Wait() {
 // UDPPacketConn (per-query mode) and DNSPacketConn (shared socket mode) so
 // that forged response visibility is consistent regardless of transport.
 type ForgedStats struct {
-	Total     uint64
-	SERVFAIL  uint64
-	NXDOMAIN  uint64
-	Other     uint64
+	Total    uint64
+	SERVFAIL uint64
+	NXDOMAIN uint64
+	Other    uint64
 }
 
 // Record increments the appropriate counter for the given RCODE and logs
@@ -117,7 +117,7 @@ func (s *ForgedStats) Record(rcode uint16) {
 		atomic.AddUint64(&s.Other, 1)
 	}
 	total := atomic.AddUint64(&s.Total, 1)
-	log.Infof("forged DNS response (rcode=%d, total forged=%d, SERVFAIL=%d, NXDOMAIN=%d, other=%d)",
+	log.Debugf("forged DNS response (rcode=%d, total forged=%d, SERVFAIL=%d, NXDOMAIN=%d, other=%d)",
 		rcode, total,
 		atomic.LoadUint64(&s.SERVFAIL),
 		atomic.LoadUint64(&s.NXDOMAIN),
