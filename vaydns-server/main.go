@@ -65,11 +65,11 @@ import (
 	log "github.com/sirupsen/logrus"
 
 	"github.com/jellydator/ttlcache/v3"
-	"github.com/xtaci/kcp-go/v5"
-	"github.com/xtaci/smux"
 	"github.com/net2share/vaydns/dns"
 	"github.com/net2share/vaydns/noise"
 	"github.com/net2share/vaydns/turbotunnel"
+	"github.com/xtaci/kcp-go/v5"
+	"github.com/xtaci/smux"
 )
 
 const (
@@ -1228,7 +1228,7 @@ Example:
 	flag.StringVar(&recordTypeStr, "record-type", "txt", "DNS record type for downstream data (txt, cname, a, aaaa, mx, ns, srv)")
 
 	var logLevel string
-	flag.StringVar(&logLevel, "log-level", "warning", "log level (debug, info, warning, error)")
+	flag.StringVar(&logLevel, "log-level", "info", "log level (debug, info, warning, error)")
 	flag.Parse()
 
 	level, err := log.ParseLevel(logLevel)

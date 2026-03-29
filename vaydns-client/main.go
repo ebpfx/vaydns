@@ -13,10 +13,10 @@ import (
 	"strings"
 	"time"
 
-	log "github.com/sirupsen/logrus"
 	"github.com/net2share/vaydns/client"
 	"github.com/net2share/vaydns/dns"
 	"github.com/net2share/vaydns/noise"
+	log "github.com/sirupsen/logrus"
 )
 
 func readKeyFromFile(filename string) ([]byte, error) {
@@ -116,7 +116,7 @@ Known TLS fingerprints for -utls are:
 	flag.StringVar(&recordTypeStr, "record-type", "txt", "DNS record type for downstream data (txt, cname, a, aaaa, mx, ns, srv)")
 
 	var logLevel string
-	flag.StringVar(&logLevel, "log-level", "warning", "log level (debug, info, warning, error)")
+	flag.StringVar(&logLevel, "log-level", "info", "log level (debug, info, warning, error)")
 	flag.Parse()
 
 	level, err := log.ParseLevel(logLevel)
