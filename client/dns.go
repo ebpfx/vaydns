@@ -44,6 +44,11 @@ const (
 // base32Encoding is a base32 encoding without padding.
 var base32Encoding = base32.StdEncoding.WithPadding(base32.NoPadding)
 
+// forgedInfoMilestones defines the exact totals at which an INFO log is
+// emitted. After the last explicit milestone the interval logic in
+// forgedInfoMilestone takes over.
+var forgedInfoMilestones = [...]uint64{10, 100, 500, 1000, 2500, 5000}
+
 // RateLimiter implements a token bucket rate limiter for DNS queries.
 type RateLimiter struct {
 	mu       sync.Mutex
@@ -106,7 +111,8 @@ type ForgedStats struct {
 }
 
 // Record increments the appropriate counter for the given RCODE and logs
-// a summary at info level.
+// a summary at INFO level at milestone counts. Non-milestone forged
+// responses are silently counted.
 func (s *ForgedStats) Record(rcode uint16) {
 	switch rcode {
 	case dns.RcodeServerFailure:
@@ -117,11 +123,29 @@ func (s *ForgedStats) Record(rcode uint16) {
 		atomic.AddUint64(&s.Other, 1)
 	}
 	total := atomic.AddUint64(&s.Total, 1)
-	log.Debugf("forged DNS response (rcode=%d, total forged=%d, SERVFAIL=%d, NXDOMAIN=%d, other=%d)",
-		rcode, total,
-		atomic.LoadUint64(&s.SERVFAIL),
-		atomic.LoadUint64(&s.NXDOMAIN),
-		atomic.LoadUint64(&s.Other))
+	if forgedInfoMilestone(total) {
+		log.Infof("forged DNS responses: total=%d, SERVFAIL=%d, NXDOMAIN=%d, other=%d",
+			total,
+			atomic.LoadUint64(&s.SERVFAIL),
+			atomic.LoadUint64(&s.NXDOMAIN),
+			atomic.LoadUint64(&s.Other))
+	}
+}
+
+func forgedInfoMilestone(total uint64) bool {
+	for _, m := range forgedInfoMilestones {
+		if total == m {
+			return true
+		}
+	}
+	switch {
+	case total <= 100_000:
+		return total%10_000 == 0
+	case total <= 1_000_000:
+		return total%50_000 == 0
+	default:
+		return total%100_000 == 0
+	}
 }
 
 // DNSPacketConn provides a packet-sending and -receiving interface over various
