@@ -1,5 +1,5 @@
 .\" https://man.openbsd.org/mdoc.7
-.Dd 2026-03-22
+.Dd 2026-04-04
 .Dt VAYDNS-CLIENT 1
 .Os
 
@@ -13,7 +13,7 @@
 .Sh SYNOPSIS
 
 .Nm
-.Op Fl doh Ar URL | Fl dot Ar HOST : Ns Ar PORT | Fl udp Ar HOST : Ns Ar PORT
+.Op Fl doh Ar URL | Fl dot Ar HOST : Ns Ar PORT | Fl udp Ar HOST : Ns Ar PORT | Fl tcp Ar HOST : Ns Ar PORT
 .Op Fl pubkey Ar HEX | Fl pubkey-file Ar FILENAME
 .Fl domain Ar DOMAIN
 .Fl listen Ar LOCALADDR : Ns Ar LOCALPORT
@@ -35,7 +35,8 @@ running as the authoritative name server for the domain given by
 The DNS messages may be carried over
 DNS over HTTPS,
 DNS over TLS,
-or plaintext DNS over UDP.
+plaintext DNS over UDP,
+or plaintext DNS over TCP.
 The client automatically reconnects with exponential backoff
 when a session fails.
 
@@ -44,8 +45,9 @@ when a session fails.
 You must use exactly one of the
 .Fl doh ,
 .Fl dot ,
+.Fl udp ,
 or
-.Fl udp
+.Fl tcp
 options,
 to specify what form of DNS to use:
 
@@ -77,12 +79,27 @@ are the UDP address of the DNS resolver.
 .Ar PORT
 is normally 53.
 
+.It Fl tcp Ar HOST : Ns Ar PORT
+Use plaintext DNS over TCP.
+.Ar HOST
+and
+.Ar PORT
+are the TCP address of the DNS resolver.
+.Ar PORT
+is normally 53.
+
 .Pp
 By default, each DNS query is sent from a fresh UDP socket with a
 randomized source port, making the tunnel harder to fingerprint.
 Use
 .Fl udp-shared-socket
 to revert to a single shared socket.
+
+.Pp
+With
+.Fl tcp ,
+each DNS query is sent on a fresh TCP connection with its own
+ephemeral source port.
 
 .Pp
 With
@@ -226,7 +243,7 @@ Only applies when using
 without
 .Fl udp-shared-socket .
 Default:
-.Cm 400ms .
+.Cm 500ms .
 
 .It Fl udp-shared-socket
 Use a single shared UDP socket instead of per-query sockets.
@@ -244,6 +261,29 @@ dropping them as forged.
 By default, error responses are silently dropped
 and the worker keeps waiting for a valid response until
 .Fl udp-timeout .
+
+.It Fl tcp-workers Ar N
+Number of concurrent TCP worker goroutines.
+Only applies when using
+.Fl tcp .
+Default:
+.Cm 100 .
+
+.It Fl tcp-timeout Ar DURATION
+Per-query TCP response timeout.
+Only applies when using
+.Fl tcp .
+The timeout covers connecting, sending the query,
+and waiting for a valid response.
+Default:
+.Cm 500ms .
+
+.It Fl tcp-accept-errors
+Accept DNS error responses (SERVFAIL, NXDOMAIN, REFUSED) instead of
+dropping them as forged.
+By default, error responses are silently dropped
+and the worker keeps waiting for a valid response until
+.Fl tcp-timeout .
 
 .It Fl utls Oo
 .Op Ar weight Ns Sy * Ns
@@ -355,8 +395,10 @@ and
 
 The
 .Fl udp
-option is not covert,
-and is intended for debugging and special configurations.
+and
+.Fl tcp
+options are not covert,
+and are intended for debugging and special configurations.
 Only the
 .Fl doh
 and
@@ -367,7 +409,9 @@ because they encrypt DNS messages between
 and the recursive resolver.
 The
 .Fl udp
-mode sends plaintext DNS messages,
+and
+.Fl tcp
+modes send plaintext DNS messages,
 which reveal the use of a DNS tunnel by their special format.
 
 Even with

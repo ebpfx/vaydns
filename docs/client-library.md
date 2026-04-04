@@ -51,7 +51,7 @@ t.ListenAndServe("127.0.0.1:7000") // blocks, handles reconnection
 
 | Type | Description |
 |------|-------------|
-| `Resolver` | DNS transport configuration (UDP, DoT, or DoH) |
+| `Resolver` | DNS transport configuration (UDP, TCP, DoT, or DoH) |
 | `TunnelServer` | Server domain + public key + wire protocol settings |
 | `Tunnel` | Main tunnel connection with session and timeout configuration |
 | `Outbound` | High-level API for multiple resolver/server pairs |
@@ -60,6 +60,7 @@ t.ListenAndServe("127.0.0.1:7000") // blocks, handles reconnection
 
 ```go
 client.ResolverTypeUDP  // plaintext UDP DNS
+client.ResolverTypeTCP  // plaintext TCP DNS
 client.ResolverTypeDOT  // DNS over TLS (RFC 7858)
 client.ResolverTypeDOH  // DNS over HTTPS (RFC 8484)
 ```
@@ -72,11 +73,14 @@ All configuration is done through struct fields before calling `Initiate*` or `L
 // Resolver options
 r.UTLSClientHelloID = &utls.ClientHelloID{...} // TLS fingerprint
 r.RoundTripper = customTransport                // custom HTTP transport for DoH (overrides UTLSClientHelloID)
-r.DialerControl = controlFunc                   // socket options callback (SO_MARK, SO_BINDTODEVICE, etc.)
+r.DialerControl = controlFunc                   // socket options callback (SO_MARK, SO_BINDTODEVICE, etc.) for UDP/TCP sockets
 r.UDPWorkers = 200                              // concurrent UDP workers
 r.UDPSharedSocket = true                        // single socket mode
 r.UDPTimeout = 500 * time.Millisecond           // per-query timeout
 r.UDPAcceptErrors = true                        // accept non-NOERROR responses (disables forged filtering)
+r.TCPWorkers = 200                              // concurrent TCP workers
+r.TCPTimeout = 500 * time.Millisecond           // per-query timeout
+r.TCPAcceptErrors = true                        // accept non-NOERROR responses (disables forged filtering)
 
 // Tunnel server options
 ts.DnsttCompat = true    // original dnstt wire format

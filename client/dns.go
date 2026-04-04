@@ -101,8 +101,9 @@ func (rl *RateLimiter) Wait() {
 }
 
 // ForgedStats tracks forged DNS response counters. It is shared between
-// UDPPacketConn (per-query mode) and DNSPacketConn (shared socket mode) so
-// that forged response visibility is consistent regardless of transport.
+// per-query transports (UDPPacketConn, TCPPacketConn) and DNSPacketConn
+// (shared socket mode) so that forged response visibility is consistent
+// regardless of transport.
 type ForgedStats struct {
 	Total    uint64
 	SERVFAIL uint64
@@ -193,8 +194,9 @@ type DNSPacketConn struct {
 // transport.WriteTo whenever a message needs to be sent.
 // maxQnameLen is the max total QNAME length (0 = 253 per RFC 1035).
 // maxNumLabels is the max number of data labels (0 = unlimited).
-// forgedStats is shared with the transport layer (e.g. UDPPacketConn) for
-// consistent forged response tracking; if nil, a new instance is created.
+// forgedStats is shared with the transport layer (e.g. UDPPacketConn or
+// TCPPacketConn) for consistent forged response tracking; if nil, a new
+// instance is created.
 func NewDNSPacketConn(transport net.PacketConn, addr net.Addr, domain dns.Name, rateLimiter *RateLimiter, maxQnameLen int, maxNumLabels int, wireConfig turbotunnel.WireConfig, forgedStats *ForgedStats, rrType uint16, queueSize int, overflowMode turbotunnel.QueueOverflowMode) *DNSPacketConn {
 	if maxQnameLen <= 0 || maxQnameLen > 253 {
 		maxQnameLen = 253

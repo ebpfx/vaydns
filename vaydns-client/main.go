@@ -2,7 +2,7 @@
 //
 // Usage:
 //
-//	vaydns-client [-doh URL|-dot ADDR|-udp ADDR] [-pubkey HEX|-pubkey-file FILENAME] -domain DOMAIN -listen LOCALADDR
+//	vaydns-client [-doh URL|-dot ADDR|-udp ADDR|-tcp ADDR] [-pubkey HEX|-pubkey-file FILENAME] -domain DOMAIN -listen LOCALADDR
 package main
 
 import (
@@ -37,6 +37,7 @@ func main() {
 	var pubkeyFilename string
 	var pubkeyString string
 	var udpAddr string
+	var tcpAddr string
 	var utlsDistribution string
 	var maxQnameLen int
 	var maxNumLabels int
@@ -52,6 +53,9 @@ func main() {
 	var udpSharedSocket bool
 	var udpTimeoutStr string
 	var udpAcceptErrors bool
+	var tcpWorkers int
+	var tcpTimeoutStr string
+	var tcpAcceptErrors bool
 	var compatDnstt bool
 	var clientIDSize int
 	var recordTypeStr string
@@ -61,11 +65,12 @@ func main() {
 
 	flag.Usage = func() {
 		fmt.Fprintf(flag.CommandLine.Output(), `Usage:
-  %[1]s [-doh URL|-dot ADDR|-udp ADDR] -pubkey-file PUBKEYFILE -domain DOMAIN -listen LOCALADDR
+  %[1]s [-doh URL|-dot ADDR|-udp ADDR|-tcp ADDR] -pubkey-file PUBKEYFILE -domain DOMAIN -listen LOCALADDR
 
 Examples:
   %[1]s -doh https://resolver.example/dns-query -pubkey-file server.pub -domain t.example.com -listen 127.0.0.1:7000
   %[1]s -dot resolver.example:853 -pubkey-file server.pub -domain t.example.com -listen 127.0.0.1:7000
+  %[1]s -tcp resolver.example:53 -pubkey-file server.pub -domain t.example.com -listen 127.0.0.1:7000
 
 `, os.Args[0])
 		flag.CommandLine.VisitAll(func(f *flag.Flag) {
@@ -112,6 +117,7 @@ Known TLS fingerprints for -utls are:
 	flag.StringVar(&pubkeyString, "pubkey", "", fmt.Sprintf("server public key (%d hex digits)", noise.KeyLen*2))
 	flag.StringVar(&pubkeyFilename, "pubkey-file", "", "read server public key from file")
 	flag.StringVar(&udpAddr, "udp", "", "address of UDP DNS resolver")
+	flag.StringVar(&tcpAddr, "tcp", "", "address of TCP DNS resolver")
 	flag.StringVar(&utlsDistribution, "utls",
 		"4*random,3*Firefox_120,1*Firefox_105,3*Chrome_120,1*Chrome_102,1*iOS_14,1*iOS_13",
 		"choose TLS fingerprint from weighted distribution")
@@ -131,6 +137,9 @@ Known TLS fingerprints for -utls are:
 	flag.BoolVar(&udpSharedSocket, "udp-shared-socket", false, "use a single shared UDP socket instead of per-query sockets")
 	flag.StringVar(&udpTimeoutStr, "udp-timeout", client.DefaultUDPResponseTimeout.String(), "per-query UDP response timeout (e.g. 200ms, 1s)")
 	flag.BoolVar(&udpAcceptErrors, "udp-accept-errors", false, "accept DNS error responses instead of filtering them (disables censorship evasion)")
+	flag.IntVar(&tcpWorkers, "tcp-workers", client.DefaultTCPWorkers, "number of concurrent TCP worker goroutines")
+	flag.StringVar(&tcpTimeoutStr, "tcp-timeout", client.DefaultTCPResponseTimeout.String(), "per-query TCP response timeout (e.g. 200ms, 1s)")
+	flag.BoolVar(&tcpAcceptErrors, "tcp-accept-errors", false, "accept DNS error responses instead of filtering them (disables censorship evasion)")
 	flag.BoolVar(&compatDnstt, "dnstt-compat", false, "use original dnstt wire format (8-byte ClientID, padding prefixes)")
 	flag.IntVar(&clientIDSize, "clientid-size", 2, "client ID size in bytes (ignored when -dnstt-compat is set)")
 	flag.StringVar(&recordTypeStr, "record-type", "txt", "DNS record type for downstream data (txt, cname, a, aaaa, mx, ns, srv)")
@@ -221,12 +230,17 @@ Known TLS fingerprints for -utls are:
 		resolverAddr = udpAddr
 		transportCount++
 	}
+	if tcpAddr != "" {
+		resolverType = client.ResolverTypeTCP
+		resolverAddr = tcpAddr
+		transportCount++
+	}
 	if transportCount == 0 {
-		fmt.Fprintf(os.Stderr, "one of -doh, -dot, or -udp is required\n")
+		fmt.Fprintf(os.Stderr, "one of -doh, -dot, -udp, or -tcp is required\n")
 		os.Exit(1)
 	}
 	if transportCount > 1 {
-		fmt.Fprintf(os.Stderr, "only one of -doh, -dot, and -udp may be given\n")
+		fmt.Fprintf(os.Stderr, "only one of -doh, -dot, -udp, and -tcp may be given\n")
 		os.Exit(1)
 	}
 
@@ -264,6 +278,11 @@ Known TLS fingerprints for -utls are:
 	udpTimeout, err := time.ParseDuration(udpTimeoutStr)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "invalid -udp-timeout: %v\n", err)
+		os.Exit(1)
+	}
+	tcpTimeout, err := time.ParseDuration(tcpTimeoutStr)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "invalid -tcp-timeout: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -349,12 +368,18 @@ Known TLS fingerprints for -utls are:
 	resolver.UDPSharedSocket = udpSharedSocket
 	resolver.UDPTimeout = udpTimeout
 	resolver.UDPAcceptErrors = udpAcceptErrors
+	resolver.TCPWorkers = tcpWorkers
+	resolver.TCPTimeout = tcpTimeout
+	resolver.TCPAcceptErrors = tcpAcceptErrors
 	if udpAcceptErrors {
 		if udpSharedSocket {
 			log.Warnf("-udp-accept-errors has no effect when -udp-shared-socket is set")
 		} else {
 			log.Warnf("-udp-accept-errors disables forged response filtering; per-query workers will accept the first response regardless of RCODE, which may cause connection failures under DNS injection")
 		}
+	}
+	if tcpAcceptErrors {
+		log.Warnf("-tcp-accept-errors disables forged response filtering; per-query workers will accept the first response regardless of RCODE, which may cause connection failures under DNS injection")
 	}
 
 	// Build tunnel server config.

@@ -1,16 +1,16 @@
 # VayDNS
 
-Userspace DNS tunnel with support for DoH, DoT, and plaintext UDP.
+Userspace DNS tunnel with support for DoH, DoT, plaintext UDP, and plaintext TCP.
 
 > VayDNS is a fork of [dnstt](https://www.bamsoftware.com/software/dnstt/) by David Fifield, with protocol optimizations and additional features. The wire protocol differs from upstream dnstt by default, but the `-dnstt-compat` flag enables interoperability with original dnstt clients and servers.
 
 ## Features
 
-- **Multiple transports** — DNS over HTTPS (DoH), DNS over TLS (DoT), and plaintext UDP
+- **Multiple transports** — DNS over HTTPS (DoH), DNS over TLS (DoT), plaintext UDP, and plaintext TCP
 - **Reliable delivery** — KCP/smux session protocol with automatic retransmission
 - **End-to-end encryption** — Noise protocol with server authentication by public key
 - **TLS fingerprint camouflage** — uTLS randomizes the client's TLS fingerprint
-- **Censorship resistance** — per-query UDP sockets with forged-response filtering
+- **Censorship resistance** — per-query UDP/TCP sockets with forged-response filtering
 - **Auto-recovery** — client automatically reconnects on session failure
 
 ## Architecture
@@ -67,6 +67,13 @@ Using plaintext UDP (no covertness):
 
 ```sh
 ./vaydns-client -udp 8.8.8.8:53 \
+  -pubkey-file server.pub -domain t.example.com -listen 127.0.0.1:7000
+```
+
+Using plaintext TCP DNS:
+
+```sh
+./vaydns-client -tcp 8.8.8.8:53 \
   -pubkey-file server.pub -domain t.example.com -listen 127.0.0.1:7000
 ```
 
@@ -150,6 +157,7 @@ sudo ip6tables -t nat -I PREROUTING -i eth0 -p udp --dport 53 -j REDIRECT --to-p
 | `-doh URL`  | Use DNS over HTTPS with the given resolver URL   |
 | `-dot ADDR` | Use DNS over TLS with the given resolver address |
 | `-udp ADDR` | Use plaintext UDP DNS (no covertness)            |
+| `-tcp ADDR` | Use plaintext TCP DNS                            |
 
 #### Required
 
@@ -186,9 +194,19 @@ These flags only apply when using `-udp`. By default, each query is sent from a 
 | `-udp-shared-socket` | Use a single shared UDP socket instead of per-query sockets. By default, each query is sent from a new socket with a random ephemeral source port, making the tunnel harder to fingerprint or block by port. With this flag, all queries share one socket and source port for the lifetime of the client — blocking that port kills the tunnel. | `false` |
 | `-udp-accept-errors` | In per-query mode, accept the first DNS response regardless of RCODE instead of waiting for a NOERROR response. This disables forged response filtering — the worker stops waiting after the first forged response, so the real response is likely lost. Only useful for debugging; not recommended in production. Ignored when `-udp-shared-socket` is set. | `false` |
 
+#### TCP transport tuning
+
+These flags only apply when using `-tcp`. Each query is sent on a fresh TCP connection with its own ephemeral source port.
+
+| Flag                 | Description                                                                                                                                                | Default |
+| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- | ------- |
+| `-tcp-workers N`     | Concurrent TCP worker goroutines                                                                                                                           | `100`   |
+| `-tcp-timeout D`     | Per-query response timeout — the total time a worker has to connect, send the query, and receive a valid (NOERROR) response. Forged responses are discarded but the original deadline is not extended. | `500ms` |
+| `-tcp-accept-errors` | Accept the first DNS response regardless of RCODE instead of waiting for a NOERROR response. This disables forged response filtering and is only useful for debugging. | `false` |
+
 #### Queue and KCP tuning
 
-These flags apply to all transports (UDP, DoH, DoT) on the client side. The server has the same flags.
+These flags apply to all transports (UDP, TCP, DoH, DoT) on the client side. The server has the same flags.
 
 | Flag                   | Description                                                        | Default |
 | ---------------------- | ------------------------------------------------------------------ | ------- |
@@ -317,7 +335,7 @@ smux              (stream multiplexing)
 Noise             (encryption + authentication)
 KCP               (reliable delivery over datagrams)
 DNS messages
-DoH / DoT / UDP
+DoH / DoT / UDP / TCP
 ```
 
 An observer at the resolver level can see KCP headers but cannot read smux frames or application data.
@@ -345,7 +363,7 @@ If no key is provided, the server generates a temporary keypair on each start.
 
 ### Covertness
 
-DoH/DoT hides tunnel traffic from local network observers — they can see you're connecting to a resolver but not the tunnel destination or contents. An observer can likely infer from traffic volume that a tunnel is being used, but cannot determine the remote endpoint or read the contents. Without DoH/DoT (plaintext UDP), the tunnel is visible to anyone on the path, including its destination.
+DoH/DoT hides tunnel traffic from local network observers — they can see you're connecting to a resolver but not the tunnel destination or contents. An observer can likely infer from traffic volume that a tunnel is being used, but cannot determine the remote endpoint or read the contents. Without DoH/DoT (plaintext UDP or TCP), the tunnel is visible to anyone on the path, including its destination.
 
 Observers between the resolver and the tunnel server (including the resolver itself) can identify the tunnel and its destination, but cannot read the encrypted contents.
 

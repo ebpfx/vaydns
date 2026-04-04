@@ -1,7 +1,7 @@
 // Package client provides a reusable DNS tunnel client library.
 //
 // It provides configuration options for VayDNS features (DoH/DoT transports,
-// per-query UDP, forged response filtering, rate limiting, dnstt wire
+// per-query UDP/TCP, forged response filtering, rate limiting, dnstt wire
 // compatibility, etc.).
 //
 // Basic usage (xray-core compatible):
@@ -49,6 +49,8 @@ const (
 	DefaultSessionCheckInterval = 500 * time.Millisecond
 	DefaultUDPResponseTimeout   = 500 * time.Millisecond
 	DefaultUDPWorkers           = 100
+	DefaultTCPResponseTimeout   = 500 * time.Millisecond
+	DefaultTCPWorkers           = 100
 	DefaultMaxStreams           = 0 // unlimited
 	DefaultHandshakeTimeout     = 15 * time.Second
 )
@@ -64,6 +66,7 @@ type ResolverType string
 
 const (
 	ResolverTypeUDP ResolverType = "udp"
+	ResolverTypeTCP ResolverType = "tcp"
 	ResolverTypeDOT ResolverType = "dot"
 	ResolverTypeDOH ResolverType = "doh"
 )
@@ -71,7 +74,7 @@ const (
 // Resolver holds DNS resolver configuration.
 type Resolver struct {
 	ResolverType ResolverType
-	ResolverAddr string // UDP: "1.1.1.1:53", DoT: "resolver:853", DoH: "https://resolver/dns-query"
+	ResolverAddr string // UDP/TCP: "1.1.1.1:53", DoT: "resolver:853", DoH: "https://resolver/dns-query"
 
 	// UTLSClientHelloID sets the uTLS fingerprint for DoH/DoT connections.
 	// nil means no uTLS (plain TLS).
@@ -82,7 +85,7 @@ type Resolver struct {
 	RoundTripper http.RoundTripper
 
 	// DialerControl is an optional callback for setting socket options
-	// (SO_MARK, SO_BINDTODEVICE, etc.) on UDP sockets.
+	// (SO_MARK, SO_BINDTODEVICE, etc.) on UDP and plaintext TCP sockets.
 	DialerControl func(network, address string, c syscall.RawConn) error
 
 	// UDP transport settings (only apply to ResolverTypeUDP).
@@ -90,12 +93,17 @@ type Resolver struct {
 	UDPSharedSocket bool          // use single shared socket instead of per-query
 	UDPTimeout      time.Duration // per-query response timeout (0 = DefaultUDPResponseTimeout)
 	UDPAcceptErrors bool          // pass through non-NOERROR responses (default: filter)
+
+	// TCP transport settings (only apply to ResolverTypeTCP).
+	TCPWorkers      int           // concurrent TCP workers (0 = DefaultTCPWorkers)
+	TCPTimeout      time.Duration // per-query response timeout (0 = DefaultTCPResponseTimeout)
+	TCPAcceptErrors bool          // pass through non-NOERROR responses (default: filter)
 }
 
 // NewResolver creates a Resolver with the given type and address.
 func NewResolver(resolverType ResolverType, resolverAddr string) (Resolver, error) {
 	switch resolverType {
-	case ResolverTypeUDP, ResolverTypeDOT, ResolverTypeDOH:
+	case ResolverTypeUDP, ResolverTypeTCP, ResolverTypeDOT, ResolverTypeDOH:
 	default:
 		return Resolver{}, fmt.Errorf("unsupported resolver type: %s", resolverType)
 	}
@@ -324,6 +332,27 @@ func (t *Tunnel) InitiateResolverConnection() error {
 			t.forgedStats = forgedStats
 			t.resolverConn = conn
 		}
+		return nil
+
+	case ResolverTypeTCP:
+		if _, err := net.ResolveTCPAddr("tcp", r.ResolverAddr); err != nil {
+			return err
+		}
+		t.remoteAddr = turbotunnel.DummyAddr{}
+		workers := r.TCPWorkers
+		if workers <= 0 {
+			workers = DefaultTCPWorkers
+		}
+		timeout := r.TCPTimeout
+		if timeout <= 0 {
+			timeout = DefaultTCPResponseTimeout
+		}
+		conn, forgedStats, err := NewTCPPacketConn(r.ResolverAddr, r.DialerControl, workers, timeout, !r.TCPAcceptErrors, t.effectivePacketQueueSize(), t.effectiveQueueOverflowMode())
+		if err != nil {
+			return err
+		}
+		t.forgedStats = forgedStats
+		t.resolverConn = conn
 		return nil
 
 	case ResolverTypeDOH:
