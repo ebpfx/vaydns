@@ -3,10 +3,12 @@ package client
 import (
 	"bytes"
 	"io"
+	"net"
 	"testing"
 	"time"
 
 	"github.com/net2share/vaydns/dns"
+	"github.com/net2share/vaydns/turbotunnel"
 )
 
 func allPackets(buf []byte) ([][]byte, error) {
@@ -133,5 +135,123 @@ func TestLabelConstraints(t *testing.T) {
 
 		t.Logf("maxQnameLen=%d maxNumLabels=%d domain=%s: maxEncoded=%d queryNameLen=%d",
 			tc.maxQnameLen, tc.maxNumLabels, tc.domainStr, maxEncoded, queryNameLen)
+	}
+}
+
+type capturePacketConn struct {
+	buf []byte
+}
+
+func (c *capturePacketConn) ReadFrom([]byte) (int, net.Addr, error) { return 0, nil, io.EOF }
+func (c *capturePacketConn) WriteTo(p []byte, _ net.Addr) (int, error) {
+	c.buf = append([]byte(nil), p...)
+	return len(p), nil
+}
+func (c *capturePacketConn) Close() error                     { return nil }
+func (c *capturePacketConn) LocalAddr() net.Addr              { return turbotunnel.DummyAddr{} }
+func (c *capturePacketConn) SetDeadline(time.Time) error      { return nil }
+func (c *capturePacketConn) SetReadDeadline(time.Time) error  { return nil }
+func (c *capturePacketConn) SetWriteDeadline(time.Time) error { return nil }
+
+func decodeQueryPayload(t *testing.T, buf []byte, domain dns.Name) []byte {
+	t.Helper()
+
+	msg, err := dns.MessageFromWireFormat(buf)
+	if err != nil {
+		t.Fatalf("MessageFromWireFormat: %v", err)
+	}
+	if len(msg.Question) != 1 {
+		t.Fatalf("unexpected question count: %d", len(msg.Question))
+	}
+	labels, ok := msg.Question[0].Name.TrimSuffix(domain)
+	if !ok {
+		t.Fatalf("query name %s does not end with domain %s", msg.Question[0].Name, domain)
+	}
+	var encoded []byte
+	for _, label := range labels {
+		encoded = append(encoded, label...)
+	}
+	decoded := make([]byte, base32Encoding.DecodedLen(len(encoded)))
+	n, err := base32Encoding.Decode(decoded, bytes.ToUpper(encoded))
+	if err != nil {
+		t.Fatalf("base32 decode: %v", err)
+	}
+	return decoded[:n]
+}
+
+func TestSendEncodesDataQuery(t *testing.T) {
+	domain, err := dns.ParseName("t.example.com")
+	if err != nil {
+		t.Fatalf("ParseName: %v", err)
+	}
+	conn := &capturePacketConn{}
+	c := &DNSPacketConn{
+		clientID:    turbotunnel.NewClientID(3),
+		wireConfig:  turbotunnel.WireConfig{ClientIDSize: 3},
+		domain:      domain,
+		rrType:      dns.RRTypeTXT,
+		maxQnameLen: 253,
+	}
+
+	payload := []byte("abc")
+	if err := c.send(conn, payload, turbotunnel.DummyAddr{}); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	decoded := decodeQueryPayload(t, conn.buf, domain)
+	if !bytes.Equal(decoded[:3], c.clientID.Bytes()) {
+		t.Fatalf("client ID mismatch: got %x want %x", decoded[:3], c.clientID.Bytes())
+	}
+	if got, want := int(decoded[3]), len(payload); got != want {
+		t.Fatalf("data length mismatch: got %d want %d", got, want)
+	}
+	if !bytes.Equal(decoded[4:], payload) {
+		t.Fatalf("payload mismatch: got %x want %x", decoded[4:], payload)
+	}
+}
+
+func TestSendEncodesPollQuery(t *testing.T) {
+	domain, err := dns.ParseName("t.example.com")
+	if err != nil {
+		t.Fatalf("ParseName: %v", err)
+	}
+	conn := &capturePacketConn{}
+	c := &DNSPacketConn{
+		clientID:    turbotunnel.NewClientID(2),
+		wireConfig:  turbotunnel.WireConfig{ClientIDSize: 2},
+		domain:      domain,
+		rrType:      dns.RRTypeTXT,
+		maxQnameLen: 253,
+	}
+
+	if err := c.send(conn, nil, turbotunnel.DummyAddr{}); err != nil {
+		t.Fatalf("send poll: %v", err)
+	}
+	decoded := decodeQueryPayload(t, conn.buf, domain)
+	if got, want := len(decoded), c.clientID.Len()+1+pollNonceLen; got != want {
+		t.Fatalf("poll length mismatch: got %d want %d", got, want)
+	}
+	if !bytes.Equal(decoded[:c.clientID.Len()], c.clientID.Bytes()) {
+		t.Fatalf("client ID mismatch: got %x want %x", decoded[:c.clientID.Len()], c.clientID.Bytes())
+	}
+	if decoded[c.clientID.Len()] != pollMarker {
+		t.Fatalf("poll marker mismatch: got %d want %d", decoded[c.clientID.Len()], pollMarker)
+	}
+}
+
+func TestSendRejectsOversizeDataQuery(t *testing.T) {
+	domain, err := dns.ParseName("t.example.com")
+	if err != nil {
+		t.Fatalf("ParseName: %v", err)
+	}
+	c := &DNSPacketConn{
+		clientID:    turbotunnel.NewClientID(2),
+		wireConfig:  turbotunnel.WireConfig{ClientIDSize: 2},
+		domain:      domain,
+		rrType:      dns.RRTypeTXT,
+		maxQnameLen: 253,
+	}
+
+	if err := c.send(&capturePacketConn{}, bytes.Repeat([]byte{'x'}, 256), turbotunnel.DummyAddr{}); err == nil {
+		t.Fatal("expected oversize payload error")
 	}
 }

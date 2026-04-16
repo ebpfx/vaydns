@@ -1,18 +1,16 @@
 // Package client provides a reusable DNS tunnel client library.
 //
 // It provides configuration options for VayDNS features (DoH/DoT transports,
-// per-query UDP, forged response filtering, rate limiting, dnstt wire
-// compatibility, etc.).
+// per-query UDP, forged response filtering, rate limiting, etc.).
 //
 // Basic usage (xray-core compatible):
 //
 //	r, _ := client.NewResolver(client.ResolverTypeUDP, "8.8.8.8:53")
-//	ts, _ := client.NewTunnelServer("t.example.com", "pubkey-hex")
+//	ts, _ := client.NewTunnelServer("t.example.com")
 //	t, _ := client.NewTunnel(r, ts)
 //	t.InitiateResolverConnection()
 //	t.InitiateDNSPacketConn(ts.Addr)
 //	t.InitiateKCPConn(ts.MTU)
-//	t.InitiateNoiseChannel()
 //	t.InitiateSmuxSession()
 //	stream, _ := t.OpenStream() // returns net.Conn
 //	defer t.Close()
@@ -32,7 +30,6 @@ import (
 	"time"
 
 	"github.com/net2share/vaydns/dns"
-	"github.com/net2share/vaydns/noise"
 	"github.com/net2share/vaydns/turbotunnel"
 	utls "github.com/refraction-networking/utls"
 	log "github.com/sirupsen/logrus"
@@ -51,18 +48,11 @@ const (
 	DefaultUDPResponseTimeout       = 500 * time.Millisecond
 	DefaultUDPWorkers               = 100
 	DefaultMaxStreams               = 0 // unlimited
-	DefaultHandshakeTimeout         = 15 * time.Second
 	DefaultPollDelay                = 500 * time.Millisecond
 	DefaultActivePollDelay          = 200 * time.Millisecond
 	DefaultPollMaxDelay             = 2 * time.Second
-	DefaultUDPTransportStaleTimeout = 3 * time.Second
-	DefaultOpenStreamFailureLimit   = 3
-)
-
-// Default timeouts for dnstt compatibility mode.
-const (
-	DnsttIdleTimeout = 2 * time.Minute
-	DnsttKeepAlive   = 10 * time.Second
+	DefaultUDPTransportStaleTimeout = 10 * time.Second
+	DefaultOpenStreamFailureLimit   = 10
 )
 
 // ResolverType identifies the DNS transport to use.
@@ -111,22 +101,15 @@ func NewResolver(resolverType ResolverType, resolverAddr string) (Resolver, erro
 	}, nil
 }
 
-// TunnelServer holds tunnel server configuration (domain + public key).
+// TunnelServer holds tunnel server configuration.
 type TunnelServer struct {
-	Addr               dns.Name
-	PubKey             string
-	MTU                int // auto-computed if 0 when InitiateKCPConn is called
-	decodedNoisePubKey []byte
-
-	// DnsttCompat enables the original dnstt wire format (8-byte ClientID,
-	// padding prefixes). When true, ClientIDSize is forced to 8.
-	DnsttCompat bool
+	Addr dns.Name
+	MTU  int // auto-computed if 0 when InitiateKCPConn is called
 
 	// ClientIDSize is the ClientID size in bytes (default: 2).
-	// Ignored when DnsttCompat is true.
 	ClientIDSize int
 
-	// MaxQnameLen is the maximum QNAME wire length (default: 101, or 253 with DnsttCompat).
+	// MaxQnameLen is the maximum QNAME wire length (default: 101).
 	MaxQnameLen int
 
 	// MaxNumLabels is the maximum number of data labels (default: 0 = unlimited).
@@ -140,31 +123,20 @@ type TunnelServer struct {
 	RecordType string
 }
 
-// NewTunnelServer creates a TunnelServer from a domain string and hex-encoded
-// public key.
-func NewTunnelServer(addr string, pubKeyString string) (TunnelServer, error) {
+// NewTunnelServer creates a TunnelServer from a domain string.
+func NewTunnelServer(addr string) (TunnelServer, error) {
 	domain, err := dns.ParseName(addr)
 	if err != nil {
 		return TunnelServer{}, fmt.Errorf("invalid domain %+q: %w", addr, err)
 	}
 
-	pubkey, err := noise.DecodeKey(pubKeyString)
-	if err != nil {
-		return TunnelServer{}, fmt.Errorf("pubkey format error: %w", err)
-	}
-
 	return TunnelServer{
-		Addr:               domain,
-		PubKey:             pubKeyString,
-		decodedNoisePubKey: pubkey,
+		Addr: domain,
 	}, nil
 }
 
 // wireConfig returns the WireConfig derived from the TunnelServer settings.
 func (ts *TunnelServer) wireConfig() turbotunnel.WireConfig {
-	if ts.DnsttCompat {
-		return turbotunnel.WireConfig{ClientIDSize: 8, Compat: true}
-	}
 	size := ts.ClientIDSize
 	if size <= 0 {
 		size = 2
@@ -181,13 +153,10 @@ func (ts *TunnelServer) effectiveRRType() uint16 {
 	return rt
 }
 
-// effectiveMaxQnameLen returns the max QNAME length, applying dnstt defaults.
+// effectiveMaxQnameLen returns the configured max QNAME length.
 func (ts *TunnelServer) effectiveMaxQnameLen() int {
 	if ts.MaxQnameLen > 0 {
 		return ts.MaxQnameLen
-	}
-	if ts.DnsttCompat {
-		return 253
 	}
 	return 101
 }
@@ -200,22 +169,21 @@ type Tunnel struct {
 	TunnelServer TunnelServer
 
 	// Session configuration. Zero values use defaults.
-	IdleTimeout              time.Duration                 // default: 10s (2m with DnsttCompat)
-	KeepAlive                time.Duration                 // default: 2s (10s with DnsttCompat)
+	IdleTimeout              time.Duration                 // default: 10s
+	KeepAlive                time.Duration                 // default: 2s
 	OpenStreamTimeout        time.Duration                 // default: 10s
 	MaxStreams               int                           // default: 0 (0 = unlimited)
 	ReconnectMinDelay        time.Duration                 // default: 1s
 	ReconnectMaxDelay        time.Duration                 // default: 30s
 	SessionCheckInterval     time.Duration                 // default: 500ms
-	HandshakeTimeout         time.Duration                 // default: 15s
 	PacketQueueSize          int                           // default: QueueSize (512)
 	KCPWindowSize            int                           // default: PacketQueueSize/2
 	QueueOverflowMode        turbotunnel.QueueOverflowMode // default: drop
 	PollDelay                time.Duration                 // default: 500ms
 	ActivePollDelay          time.Duration                 // default: 200ms
 	PollMaxDelay             time.Duration                 // default: 2s
-	UDPTransportStaleTimeout time.Duration                 // default: 3s (UDP per-query only)
-	OpenStreamFailureLimit   int                           // default: 3 consecutive idle failures
+	UDPTransportStaleTimeout time.Duration                 // default: 10s (UDP per-query only)
+	OpenStreamFailureLimit   int                           // default: 10 consecutive idle failures
 
 	// internal state
 	wireConfig    turbotunnel.WireConfig
@@ -223,7 +191,6 @@ type Tunnel struct {
 	resolverConn  net.PacketConn
 	dnsPacketConn *DNSPacketConn
 	kcpConn       *kcp.UDPSession
-	noiseChannel  io.ReadWriteCloser
 	smuxSession   *smux.Session
 	remoteAddr    net.Addr
 	activeStreams atomic.Int32
@@ -241,21 +208,11 @@ func NewTunnel(resolver Resolver, tunnelServer TunnelServer) (*Tunnel, error) {
 }
 
 func (t *Tunnel) applyDefaults() {
-	isDnstt := t.TunnelServer.DnsttCompat
-
 	if t.IdleTimeout == 0 {
-		if isDnstt {
-			t.IdleTimeout = DnsttIdleTimeout
-		} else {
-			t.IdleTimeout = DefaultIdleTimeout
-		}
+		t.IdleTimeout = DefaultIdleTimeout
 	}
 	if t.KeepAlive == 0 {
-		if isDnstt {
-			t.KeepAlive = DnsttKeepAlive
-		} else {
-			t.KeepAlive = DefaultKeepAlive
-		}
+		t.KeepAlive = DefaultKeepAlive
 	}
 	if t.OpenStreamTimeout == 0 {
 		t.OpenStreamTimeout = DefaultOpenStreamTimeout
@@ -271,9 +228,6 @@ func (t *Tunnel) applyDefaults() {
 	}
 	if t.SessionCheckInterval == 0 {
 		t.SessionCheckInterval = DefaultSessionCheckInterval
-	}
-	if t.HandshakeTimeout == 0 {
-		t.HandshakeTimeout = DefaultHandshakeTimeout
 	}
 	if t.PollDelay == 0 {
 		t.PollDelay = DefaultPollDelay
@@ -455,41 +409,19 @@ func (t *Tunnel) InitiateKCPConn(mtu int) error {
 	return nil
 }
 
-// InitiateNoiseChannel performs the Noise protocol handshake with a timeout.
-// The timeout is controlled by HandshakeTimeout (default 30s).
-func (t *Tunnel) InitiateNoiseChannel() error {
-	t.applyDefaults()
-	rw, err := noiseHandshake(t.kcpConn, t.TunnelServer.decodedNoisePubKey, t.HandshakeTimeout)
-	if err != nil {
-		return err
-	}
-	t.noiseChannel = rw
-	return nil
-}
-
-// noiseHandshake performs the Noise handshake on conn with a deadline.
-// It sets a deadline before the handshake and clears it after, so the
-// deadline does not affect subsequent reads/writes on the connection.
-func noiseHandshake(conn *kcp.UDPSession, pubkey []byte, timeout time.Duration) (io.ReadWriteCloser, error) {
-	conn.SetDeadline(time.Now().Add(timeout))
-	rw, err := noise.NewClient(conn, pubkey)
-	conn.SetDeadline(time.Time{}) // clear deadline
-	if err != nil {
-		return nil, fmt.Errorf("noise handshake: %v", err)
-	}
-	return rw, nil
-}
-
-// InitiateSmuxSession establishes a multiplexed session over the Noise channel.
+// InitiateSmuxSession establishes a multiplexed session over KCP.
 func (t *Tunnel) InitiateSmuxSession() error {
 	t.applyDefaults()
+	if t.kcpConn == nil {
+		return fmt.Errorf("KCP session is not initialized")
+	}
 
 	smuxConfig := smux.DefaultConfig()
 	smuxConfig.Version = 2
 	smuxConfig.KeepAliveInterval = t.KeepAlive
 	smuxConfig.KeepAliveTimeout = t.IdleTimeout
 	smuxConfig.MaxStreamBuffer = 1 * 1024 * 1024
-	sess, err := smux.Client(t.noiseChannel, smuxConfig)
+	sess, err := smux.Client(t.kcpConn, smuxConfig)
 	if err != nil {
 		return fmt.Errorf("opening smux session: %v", err)
 	}
@@ -611,10 +543,6 @@ func (t *Tunnel) Close() error {
 	if t.smuxSession != nil {
 		t.smuxSession.Close()
 		t.smuxSession = nil
-	}
-	if t.noiseChannel != nil {
-		t.noiseChannel.Close()
-		t.noiseChannel = nil
 	}
 	if t.kcpConn != nil {
 		log.Debugf("session %08x closed", t.kcpConn.GetConv())
@@ -763,7 +691,7 @@ func (t *Tunnel) ListenAndServe(listenAddr string) error {
 			if err != nil {
 				if ne, ok := err.(net.Error); ok && ne.Timeout() {
 					if age := t.udpTransportStaleAge(t.activeStreams.Load() > 0); age > t.UDPTransportStaleTimeout {
-						log.Warnf("session %08x transport stale after %v with %d active streams", conv, age, t.activeStreams.Load())
+						log.Warnf("session %08x transport stale after %s with %d active streams", conv, age.Round(time.Second), t.activeStreams.Load())
 						sessionAlive = false
 						continue
 					}
@@ -796,7 +724,7 @@ func (t *Tunnel) ListenAndServe(listenAddr string) error {
 			default:
 			}
 			if age := t.udpTransportStaleAge(t.activeStreams.Load() > 0 || openFailCount.Load() > 0); age > t.UDPTransportStaleTimeout {
-				log.Warnf("session %08x transport stale after %v while streams need transport", conv, age)
+				log.Warnf("session %08x transport stale after %s while streams need transport", conv, age.Round(time.Second))
 				local.Close()
 				sessionAlive = false
 				continue
@@ -829,7 +757,7 @@ func (t *Tunnel) ListenAndServe(listenAddr string) error {
 	}
 }
 
-// createSession creates a KCP+Noise+smux session (used by ListenAndServe).
+// createSession creates a KCP+smux session (used by ListenAndServe).
 func (t *Tunnel) createSession(mtu int) (*kcp.UDPSession, *smux.Session, error) {
 	conn, err := kcp.NewConn2(t.remoteAddr, nil, 0, 0, t.dnsPacketConn)
 	if err != nil {
@@ -843,18 +771,12 @@ func (t *Tunnel) createSession(mtu int) (*kcp.UDPSession, *smux.Session, error) 
 		return nil, nil, fmt.Errorf("failed to set KCP MTU to %d", mtu)
 	}
 
-	rw, err := noiseHandshake(conn, t.TunnelServer.decodedNoisePubKey, t.HandshakeTimeout)
-	if err != nil {
-		conn.Close()
-		return nil, nil, err
-	}
-
 	smuxConfig := smux.DefaultConfig()
 	smuxConfig.Version = 2
 	smuxConfig.KeepAliveInterval = t.KeepAlive
 	smuxConfig.KeepAliveTimeout = t.IdleTimeout
 	smuxConfig.MaxStreamBuffer = 1 * 1024 * 1024
-	sess, err := smux.Client(rw, smuxConfig)
+	sess, err := smux.Client(conn, smuxConfig)
 	if err != nil {
 		conn.Close()
 		return nil, nil, fmt.Errorf("opening smux session: %v", err)

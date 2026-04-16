@@ -120,3 +120,22 @@ func TestDNSNameCapacityBoundaryConditions(t *testing.T) {
 		t.Errorf("single label capacity %d should be < unlimited %d", capacitySingleLabel, capacityManyLabels)
 	}
 }
+
+func TestTunnelServerDefaults(t *testing.T) {
+	ts, err := NewTunnelServer("t.example.com")
+	if err != nil {
+		t.Fatalf("NewTunnelServer: %v", err)
+	}
+
+	if got, want := ts.effectiveMaxQnameLen(), 101; got != want {
+		t.Fatalf("effectiveMaxQnameLen = %d, want %d", got, want)
+	}
+	if got, want := ts.wireConfig().ClientIDSize, 2; got != want {
+		t.Fatalf("default client ID size = %d, want %d", got, want)
+	}
+
+	ts.ClientIDSize = 4
+	if got, want := ts.wireConfig().DataOverhead(), 5; got != want {
+		t.Fatalf("data overhead = %d, want %d", got, want)
+	}
+}

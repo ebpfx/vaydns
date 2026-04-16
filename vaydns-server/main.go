@@ -2,30 +2,15 @@
 //
 // Usage:
 //
-//	vaydns-server -gen-key [-privkey-file PRIVKEYFILE] [-pubkey-file PUBKEYFILE]
-//	vaydns-server -udp ADDR [-privkey PRIVKEY|-privkey-file PRIVKEYFILE] [-fallback FALLBACKADDR] -domain DOMAIN -upstream UPSTREAMADDR
+//	vaydns-server -udp ADDR [-fallback FALLBACKADDR] -domain DOMAIN -upstream UPSTREAMADDR
 //
 // Example:
 //
-//	vaydns-server -gen-key -privkey-file server.key -pubkey-file server.pub
-//	vaydns-server -udp :53 -privkey-file server.key -domain t.example.com -upstream 127.0.0.1:8000
+//	vaydns-server -udp :53 -domain t.example.com -upstream 127.0.0.1:8000
 //
 // With fallback for non-DNS traffic:
 //
-//	vaydns-server -udp :53 -privkey-file server.key -fallback 127.0.0.1:8888 -domain t.example.com -upstream 127.0.0.1:8000
-//
-// To generate a persistent server private key, first run with the -gen-key
-// option. By default the generated private and public keys are printed to
-// standard output. To save them to files instead, use the -privkey-file and
-// -pubkey-file options.
-//
-//	vaydns-server -gen-key
-//	vaydns-server -gen-key -privkey-file server.key -pubkey-file server.pub
-//
-// You can give the server's private key as a file or as a hex string.
-//
-//	-privkey-file server.key
-//	-privkey 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+//	vaydns-server -udp :53 -fallback 127.0.0.1:8888 -domain t.example.com -upstream 127.0.0.1:8000
 //
 // The -udp option controls the address that will listen for incoming DNS
 // queries.
@@ -66,7 +51,6 @@ import (
 
 	"github.com/jellydator/ttlcache/v3"
 	"github.com/net2share/vaydns/dns"
-	"github.com/net2share/vaydns/noise"
 	"github.com/net2share/vaydns/turbotunnel"
 	"github.com/xtaci/kcp-go/v5"
 	"github.com/xtaci/smux"
@@ -81,9 +65,6 @@ const (
 	defaultResponseDelay     = 200 * time.Millisecond
 	defaultResponseWorkers   = 2
 	defaultResponseQueueSize = 0
-	// Bound the pre-smux handshake so half-open KCP sessions cannot linger
-	// indefinitely and consume server resources.
-	defaultHandshakeTimeout = 15 * time.Second
 
 	// How to set the TTL field in Answer resource records.
 	responseTTL = 60
@@ -93,6 +74,14 @@ const (
 
 	// How long a fallback session can be idle before being torn down.
 	fallbackIdleTimeout = 2 * time.Minute
+
+	// pollMarker is a reserved upstream length byte that marks an empty poll.
+	// Data packets always have a positive length.
+	pollMarker = 0
+
+	// pollNonceLen is the number of cache-busting random bytes that follow a
+	// poll marker. The server ignores these bytes.
+	pollNonceLen = 4
 )
 
 var (
@@ -134,93 +123,6 @@ func (s *ServerStats) log() {
 	success := atomic.LoadUint64(&s.success)
 	responseDropped := atomic.LoadUint64(&s.responseDropped)
 	log.Debugf("stats | total: %d | success: %d | response_dropped: %d", total, success, responseDropped)
-}
-
-// generateKeypair generates a private key and the corresponding public key. If
-// privkeyFilename and pubkeyFilename are respectively empty, it prints the
-// corresponding key to standard output; otherwise it saves the key to the given
-// file name. The private key is saved with mode 0400 and the public key is
-// saved with 0666 (before umask). In case of any error, it attempts to delete
-// any files it has created before returning.
-func generateKeypair(privkeyFilename, pubkeyFilename string) (err error) {
-	// Filenames to delete in case of error (avoid leaving partially written
-	// files).
-	var toDelete []string
-	defer func() {
-		for _, filename := range toDelete {
-			fmt.Fprintf(os.Stderr, "deleting partially written file %s\n", filename)
-			if closeErr := os.Remove(filename); closeErr != nil {
-				fmt.Fprintf(os.Stderr, "cannot remove %s: %v\n", filename, closeErr)
-				if err == nil {
-					err = closeErr
-				}
-			}
-		}
-	}()
-
-	privkey, err := noise.GeneratePrivkey()
-	if err != nil {
-		return err
-	}
-	pubkey := noise.PubkeyFromPrivkey(privkey)
-
-	if privkeyFilename != "" {
-		// Save the privkey to a file.
-		f, err := os.OpenFile(privkeyFilename, os.O_RDWR|os.O_CREATE, 0400)
-		if err != nil {
-			return err
-		}
-		toDelete = append(toDelete, privkeyFilename)
-		err = noise.WriteKey(f, privkey)
-		if err2 := f.Close(); err == nil {
-			err = err2
-		}
-		if err != nil {
-			return err
-		}
-	}
-
-	if pubkeyFilename != "" {
-		// Save the pubkey to a file.
-		f, err := os.Create(pubkeyFilename)
-		if err != nil {
-			return err
-		}
-		toDelete = append(toDelete, pubkeyFilename)
-		err = noise.WriteKey(f, pubkey)
-		if err2 := f.Close(); err == nil {
-			err = err2
-		}
-		if err != nil {
-			return err
-		}
-	}
-
-	// All good, allow the written files to remain.
-	toDelete = nil
-
-	if privkeyFilename != "" {
-		fmt.Printf("privkey written to %s\n", privkeyFilename)
-	} else {
-		fmt.Printf("privkey %x\n", privkey)
-	}
-	if pubkeyFilename != "" {
-		fmt.Printf("pubkey  written to %s\n", pubkeyFilename)
-	} else {
-		fmt.Printf("pubkey  %x\n", pubkey)
-	}
-
-	return nil
-}
-
-// readKeyFromFile reads a key from a named file.
-func readKeyFromFile(filename string) ([]byte, error) {
-	f, err := os.Open(filename)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-	return noise.ReadKey(f)
 }
 
 // handleStream bidirectionally connects a client stream with a TCP socket
@@ -271,22 +173,15 @@ func handleStream(stream *smux.Stream, upstream string, conv uint32) error {
 	return nil
 }
 
-// acceptStreams wraps a KCP session in a Noise channel and an smux.Session,
-// then awaits smux streams. It passes each stream to handleStream.
-func acceptStreams(conn *kcp.UDPSession, privkey []byte, upstream string, idleTimeout time.Duration, keepAlive time.Duration) error {
-	// Put a Noise channel on top of the KCP conn.
-	rw, err := serverNoiseHandshake(conn, privkey, defaultHandshakeTimeout)
-	if err != nil {
-		return err
-	}
-
-	// Put an smux session on top of the encrypted Noise channel.
+// acceptStreams wraps a KCP session in an smux.Session, then awaits smux
+// streams. It passes each stream to handleStream.
+func acceptStreams(conn *kcp.UDPSession, upstream string, idleTimeout time.Duration, keepAlive time.Duration) error {
 	smuxConfig := smux.DefaultConfig()
 	smuxConfig.Version = 2
 	smuxConfig.KeepAliveInterval = keepAlive
 	smuxConfig.KeepAliveTimeout = idleTimeout
 	smuxConfig.MaxStreamBuffer = 1 * 1024 * 1024 // default is 65536
-	sess, err := smux.Server(rw, smuxConfig)
+	sess, err := smux.Server(conn, smuxConfig)
 	if err != nil {
 		return err
 	}
@@ -314,21 +209,9 @@ func acceptStreams(conn *kcp.UDPSession, privkey []byte, upstream string, idleTi
 	}
 }
 
-// serverNoiseHandshake performs the server-side Noise handshake with a deadline.
-// This prevents half-open KCP sessions from hanging forever before smux starts.
-func serverNoiseHandshake(conn *kcp.UDPSession, privkey []byte, timeout time.Duration) (io.ReadWriteCloser, error) {
-	conn.SetDeadline(time.Now().Add(timeout))
-	rw, err := noise.NewServer(conn, privkey)
-	conn.SetDeadline(time.Time{}) // clear deadline after the handshake
-	if err != nil {
-		return nil, fmt.Errorf("noise handshake: %v", err)
-	}
-	return rw, nil
-}
-
 // acceptSessions listens for incoming KCP connections and passes them to
 // acceptStreams.
-func acceptSessions(ln *kcp.Listener, privkey []byte, mtu int, upstream string, idleTimeout time.Duration, keepAlive time.Duration, kcpWindowSize int) error {
+func acceptSessions(ln *kcp.Listener, mtu int, upstream string, idleTimeout time.Duration, keepAlive time.Duration, kcpWindowSize int) error {
 	for {
 		conn, err := ln.AcceptKCP()
 		if err != nil {
@@ -359,7 +242,7 @@ func acceptSessions(ln *kcp.Listener, privkey []byte, mtu int, upstream string, 
 				log.Debugf("session %08x closed", conn.GetConv())
 				conn.Close()
 			}()
-			err := acceptStreams(conn, privkey, upstream, idleTimeout, keepAlive)
+			err := acceptStreams(conn, upstream, idleTimeout, keepAlive)
 			if err != nil && !errors.Is(err, io.ErrClosedPipe) {
 				log.Warnf("session %08x accept streams: %v", conn.GetConv(), err)
 			}
@@ -388,35 +271,34 @@ func nextPacket(r *bytes.Reader) ([]byte, error) {
 	return p, eof(err)
 }
 
-// nextPacketDnstt reads the next packet from r using the original dnstt wire
-// format with padding awareness. A prefix byte >= 224 indicates padding: the
-// value (prefix - 224) gives the number of padding bytes that follow and are
-// discarded. A prefix byte < 224 is a data length prefix. This handles both
-// data packets (3 bytes padding) and poll packets (8 bytes padding).
-func nextPacketDnstt(r *bytes.Reader) ([]byte, error) {
-	eof := func(err error) error {
-		if err == io.EOF {
-			err = io.ErrUnexpectedEOF
-		}
-		return err
+// decodeUpstreamQuery extracts the ClientID and, for data queries, the single
+// upstream packet contained in payload. Empty polls are marked by a zero byte
+// followed by 4 random nonce bytes and return a nil packet.
+func decodeUpstreamQuery(payload []byte, clientIDSize int) (turbotunnel.ClientID, []byte, error) {
+	if len(payload) < clientIDSize {
+		return "", nil, io.ErrUnexpectedEOF
 	}
 
-	for {
-		prefix, err := r.ReadByte()
-		if err != nil {
-			return nil, err
-		}
-		if prefix >= 224 {
-			paddingLen := int64(prefix - 224)
-			if _, err := io.CopyN(io.Discard, r, paddingLen); err != nil {
-				return nil, eof(err)
-			}
-		} else {
-			p := make([]byte, int(prefix))
-			_, err = io.ReadFull(r, p)
-			return p, eof(err)
-		}
+	clientID := turbotunnel.ClientID(string(payload[:clientIDSize]))
+	payload = payload[clientIDSize:]
+	if len(payload) == 0 {
+		return clientID, nil, io.ErrUnexpectedEOF
 	}
+	if payload[0] == pollMarker {
+		if len(payload) != 1+pollNonceLen {
+			return clientID, nil, io.ErrUnexpectedEOF
+		}
+		return clientID, nil, nil
+	}
+
+	packet, err := nextPacket(bytes.NewReader(payload))
+	if err != nil {
+		return clientID, nil, err
+	}
+	if len(payload) != 1+len(packet) {
+		return clientID, nil, io.ErrUnexpectedEOF
+	}
+	return clientID, packet, nil
 }
 
 // responseFor constructs a response dns.Message that is appropriate for query.
@@ -736,33 +618,16 @@ func recvLoop(domain dns.Name, dnsConn net.PacketConn, ttConn *turbotunnel.Queue
 		}
 
 		resp, payload := responseFor(&query, domain)
-		// Extract the ClientID from the payload.
-		var clientID turbotunnel.ClientID
-		if len(payload) < wireConfig.ClientIDSize {
+		clientID, packet, err := decodeUpstreamQuery(payload, wireConfig.ClientIDSize)
+		if err != nil {
 			// Payload is not long enough to contain a ClientID.
-			if resp != nil && resp.Rcode() == dns.RcodeNoError {
+			if errors.Is(err, io.ErrUnexpectedEOF) && len(payload) < wireConfig.ClientIDSize && resp != nil && resp.Rcode() == dns.RcodeNoError {
 				resp.Flags |= dns.RcodeNameError
 				log.Debugf("NXDOMAIN: %d bytes are too short to contain a ClientID", len(payload))
 			}
-		} else {
-			clientID = turbotunnel.ClientID(string(payload[:wireConfig.ClientIDSize]))
-			payload = payload[wireConfig.ClientIDSize:]
-			// Pull out the packets contained in the payload.
-			r := bytes.NewReader(payload)
-			for {
-				var p []byte
-				var err error
-				if wireConfig.IsDnstt() {
-					p, err = nextPacketDnstt(r)
-				} else {
-					p, err = nextPacket(r)
-				}
-				if err != nil {
-					break
-				}
-				// Feed the incoming packet to KCP.
-				ttConn.QueueIncoming(p, clientID)
-			}
+		} else if packet != nil {
+			// Feed the incoming packet to KCP.
+			ttConn.QueueIncoming(packet, clientID)
 		}
 		// If a response is called for, pass it to sendLoop via the channel.
 		if resp != nil {
@@ -1137,10 +1002,8 @@ func computeMaxEncodedPayloadMultiRR(limit int, chunkSize int) int {
 	return low
 }
 
-func run(privkey []byte, domain dns.Name, upstream string, dnsConn net.PacketConn, fallbackAddr *net.UDPAddr, idleTimeout time.Duration, keepAlive time.Duration, queueSize int, kcpWindowSize int, queueOverflowMode turbotunnel.QueueOverflowMode, responseQueueSize int, responseWorkers int, responseDelay time.Duration, wireConfig turbotunnel.WireConfig) error {
+func run(domain dns.Name, upstream string, dnsConn net.PacketConn, fallbackAddr *net.UDPAddr, idleTimeout time.Duration, keepAlive time.Duration, queueSize int, kcpWindowSize int, queueOverflowMode turbotunnel.QueueOverflowMode, responseQueueSize int, responseWorkers int, responseDelay time.Duration, wireConfig turbotunnel.WireConfig) error {
 	defer dnsConn.Close()
-
-	log.Infof("pubkey %x", noise.PubkeyFromPrivkey(privkey))
 
 	// We have a variable amount of room in which to encode downstream
 	// packets in each response, because each response must contain the
@@ -1182,7 +1045,7 @@ func run(privkey []byte, domain dns.Name, upstream string, dnsConn net.PacketCon
 	}
 	defer ln.Close()
 	go func() {
-		err := acceptSessions(ln, privkey, mtu, upstream, idleTimeout, keepAlive, kcpWindowSize)
+		err := acceptSessions(ln, mtu, upstream, idleTimeout, keepAlive, kcpWindowSize)
 		if err != nil {
 			log.Warnf("accept sessions: %v", err)
 		}
@@ -1232,17 +1095,12 @@ var version = "dev"
 
 func main() {
 	var showVersion bool
-	var genKey bool
 	var domainArg string
 	var upstream string
-	var privkeyFilename string
-	var privkeyString string
-	var pubkeyFilename string
 	var udpAddr string
 	var fallbackAddrString string
 	var idleTimeoutStr string
 	var keepAliveStr string
-	var compatDnstt bool
 	var clientIDSize int
 	var recordTypeStr string
 	var queueSize int
@@ -1254,22 +1112,16 @@ func main() {
 
 	flag.Usage = func() {
 		fmt.Fprintf(flag.CommandLine.Output(), `Usage:
-  %[1]s -gen-key -privkey-file PRIVKEYFILE -pubkey-file PUBKEYFILE
-  %[1]s -udp ADDR -privkey-file PRIVKEYFILE [-fallback FALLBACKADDR] -domain DOMAIN -upstream UPSTREAMADDR
+  %[1]s -udp ADDR [-fallback FALLBACKADDR] -domain DOMAIN -upstream UPSTREAMADDR
 
 Example:
-  %[1]s -gen-key -privkey-file server.key -pubkey-file server.pub
-  %[1]s -udp :53 -privkey-file server.key -domain t.example.com -upstream 127.0.0.1:8000
-  %[1]s -udp :53 -privkey-file server.key -fallback 127.0.0.1:8888 -domain t.example.com -upstream 127.0.0.1:8000
+  %[1]s -udp :53 -domain t.example.com -upstream 127.0.0.1:8000
+  %[1]s -udp :53 -fallback 127.0.0.1:8888 -domain t.example.com -upstream 127.0.0.1:8000
 
 `, os.Args[0])
 		flag.PrintDefaults()
 	}
-	flag.BoolVar(&genKey, "gen-key", false, "generate a server keypair; print to stdout or save to files")
 	flag.IntVar(&maxUDPPayload, "mtu", maxUDPPayload, "maximum size of DNS responses")
-	flag.StringVar(&privkeyString, "privkey", "", fmt.Sprintf("server private key (%d hex digits)", noise.KeyLen*2))
-	flag.StringVar(&privkeyFilename, "privkey-file", "", "read server private key from file (with -gen-key, write to file)")
-	flag.StringVar(&pubkeyFilename, "pubkey-file", "", "with -gen-key, write server public key to file")
 	flag.StringVar(&udpAddr, "udp", "", "UDP address to listen on (required)")
 	flag.StringVar(&fallbackAddrString, "fallback", "", "UDP endpoint to forward non-DNS packets to (e.g., 127.0.0.1:8888)")
 	flag.StringVar(&domainArg, "domain", "", "tunnel domain (e.g., t.example.com)")
@@ -1281,8 +1133,7 @@ Example:
 	// keepalive: how often smux sends keepalive pings. Must be shorter than
 	// idle-timeout. Should match the client's -keepalive value.
 	flag.StringVar(&keepAliveStr, "keepalive", defaultKeepAlive.String(), "keepalive ping interval (e.g. 2s, 500ms); must be less than idle-timeout")
-	flag.BoolVar(&compatDnstt, "dnstt-compat", false, "use original dnstt wire format (8-byte ClientID, padding prefixes)")
-	flag.IntVar(&clientIDSize, "clientid-size", 2, "client ID size in bytes (ignored when -dnstt-compat is set)")
+	flag.IntVar(&clientIDSize, "clientid-size", 2, "client ID size in bytes")
 	flag.StringVar(&recordTypeStr, "record-type", "txt", "DNS record type for downstream data (txt, null, cname, a, aaaa, mx, ns, srv, caa)")
 	flag.IntVar(&queueSize, "queue-size", turbotunnel.QueueSize, "packet queue size for DNS tunnel transport")
 	flag.IntVar(&kcpWindowSize, "kcp-window-size", 0, "KCP send/receive window size in packets (0 = queue-size/2)")
@@ -1316,227 +1167,153 @@ Example:
 	}
 	recordType = rt
 
-	if genKey {
-		// -gen-key mode.
-		if flag.NArg() != 0 || privkeyString != "" || udpAddr != "" || fallbackAddrString != "" || domainArg != "" || upstream != "" || idleTimeoutStr != defaultIdleTimeout.String() || keepAliveStr != defaultKeepAlive.String() {
-			flag.Usage()
-			os.Exit(1)
-		}
-		if err := generateKeypair(privkeyFilename, pubkeyFilename); err != nil {
-			fmt.Fprintf(os.Stderr, "cannot generate keypair: %v\n", err)
-			os.Exit(1)
-		}
-	} else {
-		// Ordinary server mode.
-		if flag.NArg() != 0 {
-			fmt.Fprintf(os.Stderr, "unexpected positional arguments\n")
-			flag.Usage()
-			os.Exit(1)
-		}
-		if domainArg == "" {
-			fmt.Fprintf(os.Stderr, "the -domain option is required\n")
-			os.Exit(1)
-		}
-		if upstream == "" {
-			fmt.Fprintf(os.Stderr, "the -upstream option is required\n")
-			os.Exit(1)
-		}
-		domain, err := dns.ParseName(domainArg)
+	if flag.NArg() != 0 {
+		fmt.Fprintf(os.Stderr, "unexpected positional arguments\n")
+		flag.Usage()
+		os.Exit(1)
+	}
+	if domainArg == "" {
+		fmt.Fprintf(os.Stderr, "the -domain option is required\n")
+		os.Exit(1)
+	}
+	if upstream == "" {
+		fmt.Fprintf(os.Stderr, "the -upstream option is required\n")
+		os.Exit(1)
+	}
+	domain, err := dns.ParseName(domainArg)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "invalid domain %+q: %v\n", domainArg, err)
+		os.Exit(1)
+	}
+	log.Infof("serving domain: %s", domain)
+	// We keep upstream as a string in order to eventually pass it
+	// to net.Dial in handleStream. But for the sake of displaying
+	// an error or warning at startup, rather than only when the
+	// first stream occurs, we apply some parsing and name
+	// resolution checks here.
+	{
+		upstreamHost, _, err := net.SplitHostPort(upstream)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "invalid domain %+q: %v\n", domainArg, err)
+			// host:port format is required in all cases, so
+			// this is a fatal error.
+			fmt.Fprintf(os.Stderr, "cannot parse upstream address %+q: %v\n", upstream, err)
 			os.Exit(1)
 		}
-		log.Infof("serving domain: %s", domain)
-		// We keep upstream as a string in order to eventually pass it
-		// to net.Dial in handleStream. But for the sake of displaying
-		// an error or warning at startup, rather than only when the
-		// first stream occurs, we apply some parsing and name
-		// resolution checks here.
-		{
-			upstreamHost, _, err := net.SplitHostPort(upstream)
-			if err != nil {
-				// host:port format is required in all cases, so
-				// this is a fatal error.
-				fmt.Fprintf(os.Stderr, "cannot parse upstream address %+q: %v\n", upstream, err)
-				os.Exit(1)
-			}
-			upstreamIPAddr, err := net.ResolveIPAddr("ip", upstreamHost)
-			if err != nil {
-				// Failure to resolve the host portion is only a
-				// warning. The name will be re-resolved on each
-				// net.Dial in handleStream.
-				log.Warnf("cannot resolve upstream host %+q: %v", upstreamHost, err)
-			} else if upstreamIPAddr.IP == nil {
-				// Handle the special case of an empty string
-				// for the host portion, which resolves to a nil
-				// IP. This is a fatal error as we will not be
-				// able to dial this address.
-				fmt.Fprintf(os.Stderr, "cannot parse upstream address %+q: missing host in address\n", upstream)
-				os.Exit(1)
-			}
-		}
-
-		if udpAddr == "" {
-			fmt.Fprintf(os.Stderr, "the -udp option is required\n")
-			os.Exit(1)
-		}
-		dnsConn, err := net.ListenPacket("udp", udpAddr)
+		upstreamIPAddr, err := net.ResolveIPAddr("ip", upstreamHost)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "opening UDP listener: %v\n", err)
+			// Failure to resolve the host portion is only a
+			// warning. The name will be re-resolved on each
+			// net.Dial in handleStream.
+			log.Warnf("cannot resolve upstream host %+q: %v", upstreamHost, err)
+		} else if upstreamIPAddr.IP == nil {
+			// Handle the special case of an empty string
+			// for the host portion, which resolves to a nil
+			// IP. This is a fatal error as we will not be
+			// able to dial this address.
+			fmt.Fprintf(os.Stderr, "cannot parse upstream address %+q: missing host in address\n", upstream)
 			os.Exit(1)
 		}
+	}
 
-		var fallbackAddr *net.UDPAddr
-		if fallbackAddrString != "" {
-			fallbackAddr, err = net.ResolveUDPAddr("udp", fallbackAddrString)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "cannot resolve fallback address %+q: %v\n", fallbackAddrString, err)
-				os.Exit(1)
-			}
-		}
+	if udpAddr == "" {
+		fmt.Fprintf(os.Stderr, "the -udp option is required\n")
+		os.Exit(1)
+	}
+	dnsConn, err := net.ListenPacket("udp", udpAddr)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "opening UDP listener: %v\n", err)
+		os.Exit(1)
+	}
 
-		if pubkeyFilename != "" {
-			fmt.Fprintf(os.Stderr, "-pubkey-file may only be used with -gen-key\n")
-			os.Exit(1)
-		}
-
-		var privkey []byte
-		if privkeyFilename != "" && privkeyString != "" {
-			fmt.Fprintf(os.Stderr, "only one of -privkey and -privkey-file may be used\n")
-			os.Exit(1)
-		} else if privkeyFilename != "" {
-			var err error
-			privkey, err = readKeyFromFile(privkeyFilename)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "cannot read privkey from file: %v\n", err)
-				os.Exit(1)
-			}
-		} else if privkeyString != "" {
-			var err error
-			privkey, err = noise.DecodeKey(privkeyString)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "privkey format error: %v\n", err)
-				os.Exit(1)
-			}
-		}
-		if len(privkey) == 0 {
-			log.Warnf("generating a temporary one-time keypair")
-			log.Infof("use the -privkey or -privkey-file option for a persistent server keypair")
-			var err error
-			privkey, err = noise.GeneratePrivkey()
-			if err != nil {
-				fmt.Fprintln(os.Stderr, err)
-				os.Exit(1)
-			}
-		}
-
-		idleTimeout, err := time.ParseDuration(idleTimeoutStr)
+	var fallbackAddr *net.UDPAddr
+	if fallbackAddrString != "" {
+		fallbackAddr, err = net.ResolveUDPAddr("udp", fallbackAddrString)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "invalid -idle-timeout: %v\n", err)
+			fmt.Fprintf(os.Stderr, "cannot resolve fallback address %+q: %v\n", fallbackAddrString, err)
 			os.Exit(1)
 		}
-		keepAlive, err := time.ParseDuration(keepAliveStr)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "invalid -keepalive: %v\n", err)
-			os.Exit(1)
-		}
-		responseDelay, err := time.ParseDuration(responseDelayStr)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "invalid -response-delay: %v\n", err)
-			os.Exit(1)
-		}
-		if keepAlive >= idleTimeout {
-			fmt.Fprintf(os.Stderr, "-keepalive (%s) must be less than -idle-timeout (%s)\n", keepAlive, idleTimeout)
-			os.Exit(1)
-		}
-		if queueSize < 32 {
-			fmt.Fprintf(os.Stderr, "-queue-size (%d) must be at least 32\n", queueSize)
-			os.Exit(1)
-		}
-		if kcpWindowSize < 0 {
-			fmt.Fprintf(os.Stderr, "-kcp-window-size (%d) must be >= 0\n", kcpWindowSize)
-			os.Exit(1)
-		}
-		if kcpWindowSize == 0 {
-			kcpWindowSize = queueSize / 2
-			if kcpWindowSize < 1 {
-				kcpWindowSize = 1
-			}
-		}
-		if kcpWindowSize > queueSize {
-			fmt.Fprintf(os.Stderr, "-kcp-window-size (%d) must be <= -queue-size (%d)\n", kcpWindowSize, queueSize)
-			os.Exit(1)
-		}
-		if responseQueueSize < 0 {
-			fmt.Fprintf(os.Stderr, "-response-queue-size (%d) must be >= 0\n", responseQueueSize)
-			os.Exit(1)
-		}
-		if responseWorkers <= 0 {
-			fmt.Fprintf(os.Stderr, "-response-workers (%d) must be greater than 0\n", responseWorkers)
-			os.Exit(1)
-		}
-		if responseDelay <= 0 {
-			fmt.Fprintf(os.Stderr, "-response-delay (%s) must be greater than 0\n", responseDelay)
-			os.Exit(1)
-		}
-		queueOverflowMode, err := turbotunnel.ParseQueueOverflowMode(queueOverflowStr)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "invalid -queue-overflow: %v\n", err)
-			os.Exit(1)
-		}
-		effectiveResponseQueueSize := responseQueueSize
-		if effectiveResponseQueueSize == 0 {
-			effectiveResponseQueueSize = queueSize
-		}
-		log.Infof("transport config: queue-size=%d kcp-window-size=%d queue-overflow=%s response-queue-size=%d response-workers=%d response-delay=%s", queueSize, kcpWindowSize, queueOverflowMode, effectiveResponseQueueSize, responseWorkers, responseDelay)
+	}
 
-		var wireConfig turbotunnel.WireConfig
-		if compatDnstt {
-			if recordType != dns.RRTypeTXT {
-				log.Warnf("-dnstt-compat forces record-type to txt; ignoring -record-type %s", recordTypeStr)
-				recordType = dns.RRTypeTXT
-			}
-			wireConfig = turbotunnel.WireConfig{ClientIDSize: 8, Compat: true}
-			// Override vaydns defaults with dnstt-compatible values unless
-			// the user explicitly set them.
-			explicitFlags := make(map[string]bool)
-			flag.Visit(func(f *flag.Flag) {
-				explicitFlags[f.Name] = true
-			})
-			if !explicitFlags["idle-timeout"] {
-				idleTimeout = 2 * time.Minute
-			}
-			if !explicitFlags["keepalive"] {
-				keepAlive = 10 * time.Second
-			}
-			// Re-validate after overrides.
-			if keepAlive >= idleTimeout {
-				fmt.Fprintf(os.Stderr, "-keepalive (%s) must be less than -idle-timeout (%s)\n", keepAlive, idleTimeout)
-				os.Exit(1)
-			}
-		} else {
-			if clientIDSize <= 0 {
-				fmt.Fprintf(os.Stderr, "-clientid-size must be positive\n")
-				os.Exit(1)
-			}
-			wireConfig = turbotunnel.WireConfig{ClientIDSize: clientIDSize}
+	idleTimeout, err := time.ParseDuration(idleTimeoutStr)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "invalid -idle-timeout: %v\n", err)
+		os.Exit(1)
+	}
+	keepAlive, err := time.ParseDuration(keepAliveStr)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "invalid -keepalive: %v\n", err)
+		os.Exit(1)
+	}
+	responseDelay, err := time.ParseDuration(responseDelayStr)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "invalid -response-delay: %v\n", err)
+		os.Exit(1)
+	}
+	if keepAlive >= idleTimeout {
+		fmt.Fprintf(os.Stderr, "-keepalive (%s) must be less than -idle-timeout (%s)\n", keepAlive, idleTimeout)
+		os.Exit(1)
+	}
+	if queueSize < 32 {
+		fmt.Fprintf(os.Stderr, "-queue-size (%d) must be at least 32\n", queueSize)
+		os.Exit(1)
+	}
+	if kcpWindowSize < 0 {
+		fmt.Fprintf(os.Stderr, "-kcp-window-size (%d) must be >= 0\n", kcpWindowSize)
+		os.Exit(1)
+	}
+	if kcpWindowSize == 0 {
+		kcpWindowSize = queueSize / 2
+		if kcpWindowSize < 1 {
+			kcpWindowSize = 1
 		}
-		log.Infof("wire config: clientid-size=%d compat=%v", wireConfig.ClientIDSize, wireConfig.Compat)
+	}
+	if kcpWindowSize > queueSize {
+		fmt.Fprintf(os.Stderr, "-kcp-window-size (%d) must be <= -queue-size (%d)\n", kcpWindowSize, queueSize)
+		os.Exit(1)
+	}
+	if responseQueueSize < 0 {
+		fmt.Fprintf(os.Stderr, "-response-queue-size (%d) must be >= 0\n", responseQueueSize)
+		os.Exit(1)
+	}
+	if responseWorkers <= 0 {
+		fmt.Fprintf(os.Stderr, "-response-workers (%d) must be greater than 0\n", responseWorkers)
+		os.Exit(1)
+	}
+	if responseDelay <= 0 {
+		fmt.Fprintf(os.Stderr, "-response-delay (%s) must be greater than 0\n", responseDelay)
+		os.Exit(1)
+	}
+	queueOverflowMode, err := turbotunnel.ParseQueueOverflowMode(queueOverflowStr)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "invalid -queue-overflow: %v\n", err)
+		os.Exit(1)
+	}
+	effectiveResponseQueueSize := responseQueueSize
+	if effectiveResponseQueueSize == 0 {
+		effectiveResponseQueueSize = queueSize
+	}
+	log.Infof("transport config: queue-size=%d kcp-window-size=%d queue-overflow=%s response-queue-size=%d response-workers=%d response-delay=%s", queueSize, kcpWindowSize, queueOverflowMode, effectiveResponseQueueSize, responseWorkers, responseDelay)
 
-		switch recordType {
-		case dns.RRTypeCNAME, dns.RRTypeNS, dns.RRTypeMX, dns.RRTypeSRV:
-			explicitFlags := make(map[string]bool)
-			flag.Visit(func(f *flag.Flag) {
-				explicitFlags[f.Name] = true
-			})
-			if explicitFlags["mtu"] {
-				log.Warnf("-mtu has no effect with -record-type %s; capacity is bounded by the DNS name length limit (255 bytes)", recordTypeStr)
-			}
-		}
+	if clientIDSize <= 0 {
+		fmt.Fprintf(os.Stderr, "-clientid-size must be positive\n")
+		os.Exit(1)
+	}
+	wireConfig := turbotunnel.WireConfig{ClientIDSize: clientIDSize}
+	log.Infof("wire config: clientid-size=%d", wireConfig.ClientIDSize)
 
-		err = run(privkey, domain, upstream, dnsConn, fallbackAddr, idleTimeout, keepAlive, queueSize, kcpWindowSize, queueOverflowMode, responseQueueSize, responseWorkers, responseDelay, wireConfig)
-		if err != nil {
-			log.Fatalf("%v", err)
+	switch recordType {
+	case dns.RRTypeCNAME, dns.RRTypeNS, dns.RRTypeMX, dns.RRTypeSRV:
+		explicitFlags := make(map[string]bool)
+		flag.Visit(func(f *flag.Flag) {
+			explicitFlags[f.Name] = true
+		})
+		if explicitFlags["mtu"] {
+			log.Warnf("-mtu has no effect with -record-type %s; capacity is bounded by the DNS name length limit (255 bytes)", recordTypeStr)
 		}
+	}
+
+	err = run(domain, upstream, dnsConn, fallbackAddr, idleTimeout, keepAlive, queueSize, kcpWindowSize, queueOverflowMode, responseQueueSize, responseWorkers, responseDelay, wireConfig)
+	if err != nil {
+		log.Fatalf("%v", err)
 	}
 }

@@ -5,19 +5,7 @@ networks:
         - subnet: 172.28.0.0/24
   backend-net:
 
-volumes:
-  keys:
-
 services:
-  keygen:
-    build:
-      context: ../..
-      dockerfile: Dockerfile
-    volumes:
-      - keys:/keys
-    command: >
-      sh -c "vaydns-server -gen-key -privkey-file /keys/server.key -pubkey-file /keys/server.pub"
-
   dns:
     image: coredns/coredns
     networks:
@@ -54,15 +42,11 @@ services:
       dns-net:
         ipv4_address: 172.28.0.30
       backend-net:
-    volumes:
-      - keys:/keys
     command: >
-      vaydns-server -udp :53 -privkey-file /keys/server.key
+      vaydns-server -udp :53
       -domain s.example.com -upstream socks:1080
       -idle-timeout 10s -keepalive 2s
     depends_on:
-      keygen:
-        condition: service_completed_successfully
       dns:
         condition: service_started
       socks:
@@ -74,10 +58,8 @@ services:
       dockerfile: Dockerfile
     networks:
       - dns-net
-    volumes:
-      - keys:/keys
     command: >
-      vaydns-client -udp 172.28.0.10:53 -pubkey-file /keys/server.pub
+      vaydns-client -udp 172.28.0.10:53
       -domain s.example.com -listen 0.0.0.0:7000
       -idle-timeout 10s -keepalive 2s -session-check-interval 500ms
       -reconnect-min 1s -reconnect-max 5s -log-level info

@@ -13,14 +13,9 @@
 .Sh SYNOPSIS
 
 .Nm
-.Fl gen-key
-.Op Fl privkey-file Ar FILENAME
-.Op Fl pubkey-file Ar FILENAME
-
-.Nm
 .Fl udp Ar ADDR : Ns Ar PORT
-.Op Fl privkey Ar HEX | Fl privkey-file Ar FILENAME
 .Op Fl mtu Ar MTU
+.Op Fl fallback Ar ADDR : Ns Ar PORT
 .Fl domain Ar DOMAIN
 .Fl upstream Ar UPSTREAMADDR : Ns Ar UPSTREAMPORT
 
@@ -40,48 +35,9 @@ acts as the authoritative name server for the domain given by
 and communicates with an instance of
 .Xr vaydns-client 1
 via a recursive resolver.
-
-.Ss GENERATING A SERVER KEYPAIR
-
-The tunnel client
-encrypts and authenticates the tunneled connection
-using the server's public key.
-To generate a server keypair, use the
-.Fl gen-key
-option.
-Use the
-.Fl privkey-file
-and
-.Fl pubkey-file
-options to save the generated private key,
-public key, or both,
-to a file.
-
-.Bl -tag
-
-.It Fl gen-key
-Generate a server keypair.
-
-.It Fl privkey-file Ar FILENAME
-With
-.Fl gen-key ,
-save the generated private key to
-.Ar FILENAME .
-
-.It Fl pubkey-file Ar FILENAME
-With
-.Fl gen-key ,
-save the generated public key to
-.Ar FILENAME .
-
-.El
-
 .Pp
-On the server, you only need to store the private key, because
-.Nm
-can derive the public key from the private key.
-The client only needs to have the server's public key
-and should not know the server's private key.
+The tunnel transport is KCP wrapped by smux.
+It does not provide a built-in authentication or encryption layer.
 
 .Ss RUNNING THE SERVER
 
@@ -105,15 +61,6 @@ Required.
 TCP address to forward tunneled connections to.
 Required.
 
-.It Fl privkey Ar HEX
-Server private key as a string of 64 hexadecimal digits.
-
-.It Fl privkey-file Ar FILENAME
-Read the server private key from
-.Ar FILENAME .
-The file should contain 64 hexadecimal digits and an
-optional trailing newline character.
-
 .It Fl mtu Ar MTU
 Never send UDP payloads larger than
 .Ar MTU
@@ -130,11 +77,7 @@ Sessions with no data within this period are torn down.
 Should match the client's
 .Fl idle-timeout .
 Default:
-.Cm 10s
-(or
-.Cm 2m
-with
-.Fl dnstt-compat ) .
+.Cm 10s .
 
 .It Fl keepalive Ar DURATION
 Keepalive ping interval.
@@ -143,11 +86,7 @@ Must be less than
 Should match the client's
 .Fl keepalive .
 Default:
-.Cm 2s
-(or
-.Cm 10s
-with
-.Fl dnstt-compat ) .
+.Cm 2s .
 
 .It Fl response-delay Ar DURATION
 Maximum time to hold a DNS response open while waiting for downstream
@@ -173,26 +112,10 @@ If an incoming packet is not a valid DNS message,
 it will be forwarded to this address.
 This allows another service to share the same UDP port.
 
-.It Fl dnstt-compat
-Enable original dnstt wire protocol compatibility.
-Uses 8-byte ClientIDs and the padding-aware upstream packet format,
-allowing the server to accept connections from original dnstt clients.
-Also overrides the following defaults to match dnstt unless explicitly set:
-.Fl idle-timeout
-to 2m,
-.Fl keepalive
-to 10s.
-When set, the
-.Fl clientid-size
-option is ignored.
-
 .It Fl clientid-size Ar N
 Set the ClientID size in bytes.
 Default:
 .Cm 2 .
-Ignored when
-.Fl dnstt-compat
-is set.
 
 .It Fl queue-size Ar N
 Packet queue size for the DNS tunnel transport.
@@ -221,33 +144,9 @@ Default:
 
 .El
 
-.Pp
-If no private key is provided via
-.Fl privkey
-or
-.Fl privkey-file ,
-.Nm
-generates a temporary keypair on each start
-and logs the public key to standard error.
-
 
 .Sh EXAMPLES
 
-Generate a keypair.
-Save the private key to the file
-.Cm server.key
-and the public key to
-.Cm server.pub .
-Copy
-.Pa server.pub
-to the client.
-
-.Bd -literal -offset indent
-vaydns-server -gen-key -privkey-file server.key \e
-  -pubkey-file server.pub
-.Ed
-
-.Pp
 Accept DNS messages at the UDP address
 .Cm 0.0.0.0:5300 ,
 decode the streams contained therein,
@@ -255,26 +154,15 @@ and forward the streams as TCP connections to
 .Cm 127.0.0.1:8000 .
 
 .Bd -literal -offset indent
-vaydns-server -udp 0.0.0.0:5300 -privkey-file server.key \e
-  -domain t.example.com -upstream 127.0.0.1:8000
-.Ed
-
-.Pp
-Accept connections from original dnstt clients:
-
-.Bd -literal -offset indent
-vaydns-server -udp 0.0.0.0:5300 -dnstt-compat \e
-  -privkey-file server.key -domain t.example.com \e
+vaydns-server -udp 0.0.0.0:5300 -domain t.example.com \e
   -upstream 127.0.0.1:8000
 .Ed
 
-.Pp
 Forward non-DNS traffic to a fallback service:
 
 .Bd -literal -offset indent
-vaydns-server -udp 0.0.0.0:5300 -privkey-file server.key \e
-  -fallback 127.0.0.1:8888 -domain t.example.com \e
-  -upstream 127.0.0.1:8000
+vaydns-server -udp 0.0.0.0:5300 -fallback 127.0.0.1:8888 \e
+  -domain t.example.com -upstream 127.0.0.1:8000
 .Ed
 
 
@@ -283,17 +171,6 @@ vaydns-server -udp 0.0.0.0:5300 -privkey-file server.key \e
 .Nm
 writes running logs to standard error.
 
-At startup,
-.Nm
-logs its public key.
-This string can be used with the
-.Fl pubkey
-option in
-.Xr vaydns-client 1 .
-
-.Dl pubkey 14ca15f53660e248d289d9302f992c4bee518f2361d6343dafa7b417b5a3d752
-
-.Pp
 At startup,
 .Nm
 logs the effective MTU, which is the amount of useful payload capacity

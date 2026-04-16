@@ -18,13 +18,12 @@ For embedding in frameworks like xray-core where you need control over each laye
 
 ```go
 r, _ := client.NewResolver(client.ResolverTypeUDP, "8.8.8.8:53")
-ts, _ := client.NewTunnelServer("t.example.com", "pubkey-hex")
+ts, _ := client.NewTunnelServer("t.example.com")
 t, _ := client.NewTunnel(r, ts)
 
 t.InitiateResolverConnection()
 t.InitiateDNSPacketConn(ts.Addr)
 t.InitiateKCPConn(ts.MTU)
-t.InitiateNoiseChannel()
 t.InitiateSmuxSession()
 
 stream, _ := t.OpenStream() // returns net.Conn
@@ -39,7 +38,7 @@ For standalone clients that need automatic session management and reconnection:
 
 ```go
 r, _ := client.NewResolver(client.ResolverTypeUDP, "8.8.8.8:53")
-ts, _ := client.NewTunnelServer("t.example.com", "pubkey-hex")
+ts, _ := client.NewTunnelServer("t.example.com")
 t, _ := client.NewTunnel(r, ts)
 
 t.ListenAndServe("127.0.0.1:7000") // blocks, handles reconnection
@@ -52,7 +51,7 @@ t.ListenAndServe("127.0.0.1:7000") // blocks, handles reconnection
 | Type | Description |
 |------|-------------|
 | `Resolver` | DNS transport configuration (UDP, DoT, or DoH) |
-| `TunnelServer` | Server domain + public key + wire protocol settings |
+| `TunnelServer` | Server domain + wire protocol settings |
 | `Tunnel` | Main tunnel connection with session and timeout configuration |
 | `Outbound` | High-level API for multiple resolver/server pairs |
 
@@ -79,7 +78,6 @@ r.UDPTimeout = 500 * time.Millisecond           // per-query timeout
 r.UDPAcceptErrors = true                        // accept non-NOERROR responses (disables forged filtering)
 
 // Tunnel server options
-ts.DnsttCompat = true    // original dnstt wire format
 ts.ClientIDSize = 1      // smaller ClientID
 ts.MaxQnameLen = 101     // QNAME length constraint
 ts.MaxNumLabels = 2      // label count constraint
@@ -94,12 +92,11 @@ t.MaxStreams = 256
 t.SessionCheckInterval = 500 * time.Millisecond
 t.ReconnectMinDelay = 1 * time.Second
 t.ReconnectMaxDelay = 30 * time.Second
-t.HandshakeTimeout = 15 * time.Second
 t.PollDelay = 500 * time.Millisecond
 t.ActivePollDelay = 200 * time.Millisecond
 t.PollMaxDelay = 2 * time.Second
-t.UDPTransportStaleTimeout = 3 * time.Second
-t.OpenStreamFailureLimit = 3
+t.UDPTransportStaleTimeout = 10 * time.Second
+t.OpenStreamFailureLimit = 10
 
 // Transport queue options
 t.PacketQueueSize = 512                                // queue capacity

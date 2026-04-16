@@ -2,11 +2,10 @@
 //
 // Usage:
 //
-//	vaydns-client [-doh URL|-dot ADDR|-udp ADDR] [-pubkey HEX|-pubkey-file FILENAME] -domain DOMAIN -listen LOCALADDR
+//	vaydns-client [-doh URL|-dot ADDR|-udp ADDR] -domain DOMAIN -listen LOCALADDR
 package main
 
 import (
-	"encoding/hex"
 	"flag"
 	"fmt"
 	"os"
@@ -15,21 +14,11 @@ import (
 
 	"github.com/net2share/vaydns/client"
 	"github.com/net2share/vaydns/dns"
-	"github.com/net2share/vaydns/noise"
 	"github.com/net2share/vaydns/turbotunnel"
 	log "github.com/sirupsen/logrus"
 )
 
 var version = "dev"
-
-func readKeyFromFile(filename string) ([]byte, error) {
-	f, err := os.Open(filename)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-	return noise.ReadKey(f)
-}
 
 func main() {
 	var showVersion bool
@@ -37,8 +26,6 @@ func main() {
 	var dotAddr string
 	var domainArg string
 	var listenAddr string
-	var pubkeyFilename string
-	var pubkeyString string
 	var udpAddr string
 	var utlsDistribution string
 	var maxQnameLen int
@@ -60,7 +47,6 @@ func main() {
 	var udpSharedSocket bool
 	var udpTimeoutStr string
 	var udpAcceptErrors bool
-	var compatDnstt bool
 	var clientIDSize int
 	var recordTypeStr string
 	var queueSize int
@@ -69,11 +55,11 @@ func main() {
 
 	flag.Usage = func() {
 		fmt.Fprintf(flag.CommandLine.Output(), `Usage:
-  %[1]s [-doh URL|-dot ADDR|-udp ADDR] -pubkey-file PUBKEYFILE -domain DOMAIN -listen LOCALADDR
+  %[1]s [-doh URL|-dot ADDR|-udp ADDR] -domain DOMAIN -listen LOCALADDR
 
 Examples:
-  %[1]s -doh https://resolver.example/dns-query -pubkey-file server.pub -domain t.example.com -listen 127.0.0.1:7000
-  %[1]s -dot resolver.example:853 -pubkey-file server.pub -domain t.example.com -listen 127.0.0.1:7000
+  %[1]s -doh https://resolver.example/dns-query -domain t.example.com -listen 127.0.0.1:7000
+  %[1]s -dot resolver.example:853 -domain t.example.com -listen 127.0.0.1:7000
 
 `, os.Args[0])
 		flag.CommandLine.VisitAll(func(f *flag.Flag) {
@@ -117,8 +103,6 @@ Known TLS fingerprints for -utls are:
 	}
 	flag.StringVar(&dohURL, "doh", "", "URL of DoH resolver")
 	flag.StringVar(&dotAddr, "dot", "", "address of DoT resolver")
-	flag.StringVar(&pubkeyString, "pubkey", "", fmt.Sprintf("server public key (%d hex digits)", noise.KeyLen*2))
-	flag.StringVar(&pubkeyFilename, "pubkey-file", "", "read server public key from file")
 	flag.StringVar(&udpAddr, "udp", "", "address of UDP DNS resolver")
 	flag.StringVar(&utlsDistribution, "utls",
 		"4*random,3*Firefox_120,1*Firefox_105,3*Chrome_120,1*Chrome_102,1*iOS_14,1*iOS_13",
@@ -144,8 +128,7 @@ Known TLS fingerprints for -utls are:
 	flag.BoolVar(&udpSharedSocket, "udp-shared-socket", false, "use a single shared UDP socket instead of per-query sockets")
 	flag.StringVar(&udpTimeoutStr, "udp-timeout", client.DefaultUDPResponseTimeout.String(), "per-query UDP response timeout (e.g. 200ms, 1s)")
 	flag.BoolVar(&udpAcceptErrors, "udp-accept-errors", false, "accept DNS error responses instead of filtering them (disables censorship evasion)")
-	flag.BoolVar(&compatDnstt, "dnstt-compat", false, "use original dnstt wire format (8-byte ClientID, padding prefixes)")
-	flag.IntVar(&clientIDSize, "clientid-size", 2, "client ID size in bytes (ignored when -dnstt-compat is set)")
+	flag.IntVar(&clientIDSize, "clientid-size", 2, "client ID size in bytes")
 	flag.StringVar(&recordTypeStr, "record-type", "txt", "DNS record type for downstream data (txt, null, cname, a, aaaa, mx, ns, srv, caa)")
 	flag.IntVar(&queueSize, "queue-size", turbotunnel.QueueSize, "packet queue size for transport and DNS layers")
 	flag.IntVar(&kcpWindowSize, "kcp-window-size", 0, "KCP send/receive window size in packets (0 = queue-size/2)")
@@ -190,26 +173,6 @@ Known TLS fingerprints for -utls are:
 	}
 	recordTypeStr = strings.ToLower(recordTypeStr)
 	log.Infof("record type: %s", recordTypeStr)
-
-	// Resolve public key.
-	var pubkeyHex string
-	if pubkeyFilename != "" && pubkeyString != "" {
-		fmt.Fprintf(os.Stderr, "only one of -pubkey and -pubkey-file may be used\n")
-		os.Exit(1)
-	} else if pubkeyFilename != "" {
-		pubkey, err := readKeyFromFile(pubkeyFilename)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "cannot read pubkey from file: %v\n", err)
-			os.Exit(1)
-		}
-		pubkeyHex = hex.EncodeToString(pubkey)
-	} else if pubkeyString != "" {
-		pubkeyHex = pubkeyString
-	}
-	if pubkeyHex == "" {
-		fmt.Fprintf(os.Stderr, "the -pubkey or -pubkey-file option is required\n")
-		os.Exit(1)
-	}
 
 	// Select uTLS fingerprint.
 	utlsClientHelloID, err := client.SampleUTLSDistribution(utlsDistribution)
@@ -371,30 +334,9 @@ Known TLS fingerprints for -utls are:
 		os.Exit(1)
 	}
 
-	// Apply -dnstt-compat overrides.
-	if compatDnstt {
-		if recordTypeStr != "txt" {
-			log.Warnf("-dnstt-compat forces record-type to txt; ignoring -record-type %s", recordTypeStr)
-			recordTypeStr = "txt"
-		}
-		explicitFlags := make(map[string]bool)
-		flag.Visit(func(f *flag.Flag) {
-			explicitFlags[f.Name] = true
-		})
-		if !explicitFlags["max-qname-len"] {
-			maxQnameLen = 253
-		}
-		if !explicitFlags["idle-timeout"] {
-			idleTimeout = client.DnsttIdleTimeout
-		}
-		if !explicitFlags["keepalive"] {
-			keepAlive = client.DnsttKeepAlive
-		}
-		// Re-validate after overrides.
-		if keepAlive >= idleTimeout {
-			fmt.Fprintf(os.Stderr, "-keepalive (%s) must be less than -idle-timeout (%s)\n", keepAlive, idleTimeout)
-			os.Exit(1)
-		}
+	if clientIDSize <= 0 {
+		fmt.Fprintf(os.Stderr, "-clientid-size must be positive\n")
+		os.Exit(1)
 	}
 
 	// Build resolver.
@@ -416,12 +358,11 @@ Known TLS fingerprints for -utls are:
 		}
 	}
 	// Build tunnel server config.
-	ts, err := client.NewTunnelServer(domainArg, pubkeyHex)
+	ts, err := client.NewTunnelServer(domainArg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		os.Exit(1)
 	}
-	ts.DnsttCompat = compatDnstt
 	ts.ClientIDSize = clientIDSize
 	ts.MaxQnameLen = maxQnameLen
 	ts.MaxNumLabels = maxNumLabels
@@ -461,11 +402,7 @@ Known TLS fingerprints for -utls are:
 		openStreamFailureLimit,
 	)
 
-	if compatDnstt {
-		log.Infof("wire config: clientid-size=8 compat=true")
-	} else {
-		log.Infof("wire config: clientid-size=%d compat=false", clientIDSize)
-	}
+	log.Infof("wire config: clientid-size=%d", clientIDSize)
 
 	if rpsLimit > 0 {
 		log.Infof("rate limiting DNS queries to %.1f requests per second", rpsLimit)

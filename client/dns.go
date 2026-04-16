@@ -20,6 +20,10 @@ import (
 )
 
 const (
+	// pollMarker is a reserved length byte for empty polls. Data packets
+	// always have a positive length.
+	pollMarker = 0
+
 	// pollNonceLen is the number of random bytes appended to poll queries
 	// for cache busting. Without this, empty polls would be identical and
 	// recursive resolvers would return cached (stale) responses.
@@ -479,11 +483,7 @@ func chunks(p []byte, n int) [][]byte {
 //
 // VayDNS encoding format:
 //   - Data query:  [ClientID:N][DataLen:1][Data]
-//   - Poll query:  [ClientID:N][Nonce:4]  (4 random bytes for cache busting)
-//
-// dnstt compatibility encoding format (when -compat dnstt):
-//   - Data query:  [ClientID:8][PaddingPrefix:224+3][Padding:3][DataLen:1][Data]
-//   - Poll query:  [ClientID:8][PaddingPrefix:224+8][Padding:8]
+//   - Poll query:  [ClientID:N][0][Nonce:4]  (0 marker + 4 random bytes)
 //
 // The encoded bytes are base32-encoded, split into 63-byte labels, and
 // appended with the tunnel domain to form the DNS query name. Label count
@@ -527,29 +527,14 @@ func (c *DNSPacketConn) send(transport net.PacketConn, p []byte, addr net.Addr) 
 		var buf bytes.Buffer
 		buf.Write(c.clientID.Bytes())
 		if len(p) > 0 {
-			if c.wireConfig.IsDnstt() {
-				// dnstt data: [ClientID][PaddingPrefix:224+3][Padding:3][DataLen:1][Data]
-				if len(p) > c.wireConfig.MaxDataLen() {
-					return fmt.Errorf("too long")
-				}
-				buf.WriteByte(224 + 3)
-				io.CopyN(&buf, rand.Reader, 3)
-			} else {
-				if len(p) > c.wireConfig.MaxDataLen() {
-					return fmt.Errorf("too long")
-				}
+			if len(p) > c.wireConfig.MaxDataLen() {
+				return fmt.Errorf("too long")
 			}
 			buf.WriteByte(byte(len(p)))
 			buf.Write(p)
 		} else {
-			if c.wireConfig.IsDnstt() {
-				// dnstt poll: [ClientID][PaddingPrefix:224+8][Padding:8]
-				buf.WriteByte(224 + 8)
-				io.CopyN(&buf, rand.Reader, 8)
-			} else {
-				// vaydns poll: [ClientID][Nonce:4]
-				io.CopyN(&buf, rand.Reader, pollNonceLen)
-			}
+			buf.WriteByte(pollMarker)
+			io.CopyN(&buf, rand.Reader, pollNonceLen)
 		}
 		decoded = buf.Bytes()
 	}

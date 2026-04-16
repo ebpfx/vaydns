@@ -16,7 +16,7 @@ import (
 //
 // ClientID is backed by a string (immutable and comparable) so it can serve as
 // a map key in RemoteMap while supporting variable sizes. The default size is
-// 2 bytes; dnstt compatibility mode uses 8 bytes.
+// 2 bytes.
 type ClientID string
 
 // NewClientID generates a random ClientID of the given byte size.
