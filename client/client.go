@@ -417,7 +417,6 @@ func (t *Tunnel) InitiateSmuxSession() error {
 	}
 
 	smuxConfig := smux.DefaultConfig()
-	smuxConfig.Version = 2
 	smuxConfig.KeepAliveInterval = t.KeepAlive
 	smuxConfig.KeepAliveTimeout = t.IdleTimeout
 	smuxConfig.MaxStreamBuffer = 1 * 1024 * 1024
@@ -772,7 +771,6 @@ func (t *Tunnel) createSession(mtu int) (*kcp.UDPSession, *smux.Session, error) 
 	}
 
 	smuxConfig := smux.DefaultConfig()
-	smuxConfig.Version = 2
 	smuxConfig.KeepAliveInterval = t.KeepAlive
 	smuxConfig.KeepAliveTimeout = t.IdleTimeout
 	smuxConfig.MaxStreamBuffer = 1 * 1024 * 1024

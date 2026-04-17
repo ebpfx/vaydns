@@ -177,7 +177,6 @@ func handleStream(stream *smux.Stream, upstream string, conv uint32) error {
 // streams. It passes each stream to handleStream.
 func acceptStreams(conn *kcp.UDPSession, upstream string, idleTimeout time.Duration, keepAlive time.Duration) error {
 	smuxConfig := smux.DefaultConfig()
-	smuxConfig.Version = 2
 	smuxConfig.KeepAliveInterval = keepAlive
 	smuxConfig.KeepAliveTimeout = idleTimeout
 	smuxConfig.MaxStreamBuffer = 1 * 1024 * 1024 // default is 65536

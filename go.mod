@@ -26,3 +26,5 @@ require (
 )
 
 replace github.com/xtaci/kcp-go/v5 => github.com/net2share/kcp-go/v5 v5.0.0-20260325165956-416ba9d3856d
+
+replace github.com/xtaci/smux => github.com/nxdp/smux v1.5.50
