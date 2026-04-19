@@ -448,7 +448,7 @@ func openStreamWithTimeout(conv uint32, timeout time.Duration, open func() (*smu
 	select {
 	case r := <-ch:
 		if r.err != nil {
-			return nil, fmt.Errorf("session %08x opening stream: %v", conv, r.err)
+			return nil, fmt.Errorf("session %08x opening stream: %w", conv, r.err)
 		}
 		return r.stream, nil
 	case <-timer.C:
@@ -492,6 +492,10 @@ func (t *Tunnel) OpenStream() (net.Conn, error) {
 
 	stream, err := openStreamWithTimeout(conv, timeout, t.smuxSession.OpenStream)
 	if err != nil {
+		if errors.Is(err, smux.ErrGoAway) && t.smuxSession != nil && !t.smuxSession.IsClosed() {
+			log.Warnf("session %08x stream IDs exhausted; closing smux session for rollover", conv)
+			t.smuxSession.Close()
+		}
 		return nil, err
 	}
 	log.Debugf("stream %08x:%d ready", conv, stream.ID())
@@ -793,6 +797,10 @@ func (t *Tunnel) handleConn(local *net.TCPConn, sess *smux.Session, conv uint32,
 
 	stream, err := openStreamWithTimeout(conv, t.OpenStreamTimeout, sess.OpenStream)
 	if err != nil {
+		if errors.Is(err, smux.ErrGoAway) && !sess.IsClosed() {
+			log.Warnf("session %08x stream IDs exhausted; closing smux session for rollover", conv)
+			sess.Close()
+		}
 		return err
 	}
 	if openFailCount != nil {
