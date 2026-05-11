@@ -50,11 +50,11 @@ are the UDP address of the DNS resolver.
 is normally 53.
 
 .Pp
-By default, each DNS query is sent from a fresh UDP socket with a
-randomized source port, making the tunnel harder to fingerprint.
+By default, each DNS query is sent through a single shared UDP socket.
+This is the most compatible mode for restricted networks.
 Use
-.Fl udp-shared-socket
-to revert to a single shared socket.
+.Fl udp-per-query-sockets
+to send each query from a fresh socket with a randomized source port.
 
 .Pp
 With
@@ -75,7 +75,8 @@ Required.
 
 .It Fl listen Ar ADDR
 Local TCP address to listen on for incoming connections.
-Required.
+Default:
+.Cm 127.0.0.1:10888 .
 
 .It Fl idle-timeout Ar DURATION
 Session idle timeout.
@@ -145,32 +146,28 @@ Maximum total QNAME length in wire format.
 Shorter values improve compatibility with restrictive resolvers
 but reduce upstream throughput.
 Default:
-.Cm 101 .
+.Cm 99 .
 
 .It Fl max-num-labels Ar N
 Maximum number of data labels in the query name before the tunnel domain.
 0 means unlimited.
 1 produces the most DNS-like queries.
 Default:
-.Cm 0 .
+.Cm 1 .
 
 .It Fl udp-workers Ar N
 Number of concurrent UDP worker goroutines.
 Only applies when using
-.Fl udp
-without
-.Fl udp-shared-socket .
+.Fl udp-per-query-sockets .
 Default:
 .Cm 100 .
 
 .It Fl udp-timeout Ar DURATION
 Per-query UDP response timeout.
 Only applies when using
-.Fl udp
-without
-.Fl udp-shared-socket .
+.Fl udp-per-query-sockets .
 Default:
-.Cm 500ms .
+.Cm 800ms .
 
 .It Fl poll-delay Ar DURATION
 Base delay before sending an empty DNS poll when idle.
@@ -191,15 +188,13 @@ Default:
 Retire the current session if per-query UDP sees no valid response for
 this long while streams need transport.
 Only applies when using
-.Fl udp
-without
-.Fl udp-shared-socket .
+.Fl udp-per-query-sockets .
 Default:
-.Cm 10s .
+.Cm 3s .
 
-.It Fl udp-shared-socket
-Use a single shared UDP socket instead of per-query sockets.
-Disables the randomized source port behavior.
+.It Fl udp-per-query-sockets
+Use per-query UDP sockets instead of the default shared socket.
+This enables randomized source ports for each query.
 When set,
 .Fl udp-workers ,
 .Fl udp-timeout ,
@@ -217,7 +212,7 @@ and the worker keeps waiting for a valid response until
 .It Fl clientid-size Ar N
 Set the ClientID size in bytes.
 Default:
-.Cm 2 .
+.Cm 1 .
 
 .It Fl queue-size Ar N
 Packet queue size for the transport and DNS layers.

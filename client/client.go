@@ -29,6 +29,7 @@ import (
 
 	"github.com/net2share/vaydns/dns"
 	"github.com/net2share/vaydns/turbotunnel"
+	"github.com/net2share/vaydns/udpaddr"
 	log "github.com/sirupsen/logrus"
 	"github.com/xtaci/kcp-go/v5"
 	"github.com/xtaci/smux"
@@ -42,14 +43,14 @@ const (
 	DefaultReconnectDelay           = 1 * time.Second
 	DefaultReconnectMaxDelay        = 30 * time.Second
 	DefaultSessionCheckInterval     = 500 * time.Millisecond
-	DefaultUDPResponseTimeout       = 500 * time.Millisecond
+	DefaultUDPResponseTimeout       = 800 * time.Millisecond
 	DefaultUDPWorkers               = 100
 	DefaultMaxStreams               = 0 // unlimited
 	DefaultPollDelay                = 500 * time.Millisecond
 	DefaultActivePollDelay          = 200 * time.Millisecond
 	DefaultPollMaxDelay             = 2 * time.Second
-	DefaultUDPTransportStaleTimeout = 10 * time.Second
-	DefaultOpenStreamFailureLimit   = 10
+	DefaultUDPTransportStaleTimeout = 3 * time.Second
+	DefaultOpenStreamFailureLimit   = 3
 )
 
 // Resolver holds DNS resolver configuration.
@@ -69,6 +70,10 @@ type Resolver struct {
 
 // NewResolver creates a Resolver for the given UDP resolver address.
 func NewResolver(resolverAddr string) (Resolver, error) {
+	resolverAddr, err := udpaddr.Normalize(resolverAddr)
+	if err != nil {
+		return Resolver{}, err
+	}
 	return Resolver{ResolverAddr: resolverAddr}, nil
 }
 

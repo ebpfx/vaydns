@@ -59,7 +59,8 @@ Required.
 
 .It Fl upstream Ar ADDR
 TCP address to forward tunneled connections to.
-Required.
+Default:
+.Cm 127.0.0.1:10888 .
 
 .It Fl mtu Ar MTU
 Never send UDP payloads larger than
@@ -92,7 +93,7 @@ Default:
 Maximum time to hold a DNS response open while waiting for downstream
 data before sending an empty response.
 Default:
-.Cm 200ms .
+.Cm 500ms .
 
 .It Fl response-queue-size Ar N
 Pending DNS response queue size.
@@ -115,7 +116,7 @@ This allows another service to share the same UDP port.
 .It Fl clientid-size Ar N
 Set the ClientID size in bytes.
 Default:
-.Cm 2 .
+.Cm 1 .
 
 .It Fl queue-size Ar N
 Packet queue size for the DNS tunnel transport.

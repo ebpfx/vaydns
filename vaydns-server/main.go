@@ -52,6 +52,7 @@ import (
 	"github.com/jellydator/ttlcache/v3"
 	"github.com/net2share/vaydns/dns"
 	"github.com/net2share/vaydns/turbotunnel"
+	"github.com/net2share/vaydns/udpaddr"
 	"github.com/xtaci/kcp-go/v5"
 	"github.com/xtaci/smux"
 )
@@ -62,8 +63,8 @@ const (
 	// Keep this comfortably below the default client UDP response timeout and
 	// low enough for interactive traffic. Long batching delays are acceptable
 	// for bulk transfer but make chat and proxy workloads feel broken.
-	defaultResponseDelay     = 200 * time.Millisecond
-	defaultResponseWorkers   = 2
+	defaultResponseDelay     = 500 * time.Millisecond
+	defaultResponseWorkers   = 3
 	defaultResponseQueueSize = 0
 
 	// How to set the TTL field in Answer resource records.
@@ -1124,7 +1125,7 @@ Example:
 	flag.StringVar(&udpAddr, "udp", "", "UDP address to listen on (required)")
 	flag.StringVar(&fallbackAddrString, "fallback", "", "UDP endpoint to forward non-DNS packets to (e.g., 127.0.0.1:8888)")
 	flag.StringVar(&domainArg, "domain", "", "tunnel domain (e.g., t.example.com)")
-	flag.StringVar(&upstream, "upstream", "", "TCP address to forward tunneled connections to (e.g., 127.0.0.1:8000)")
+	flag.StringVar(&upstream, "upstream", "127.0.0.1:10888", "TCP address to forward tunneled connections to (default 127.0.0.1:10888)")
 	// idle-timeout: if no data is received from a client for this long,
 	// the tunnel session is considered dead and torn down. Should match
 	// the client's -idle-timeout.
@@ -1132,14 +1133,14 @@ Example:
 	// keepalive: how often smux sends keepalive pings. Must be shorter than
 	// idle-timeout. Should match the client's -keepalive value.
 	flag.StringVar(&keepAliveStr, "keepalive", defaultKeepAlive.String(), "keepalive ping interval (e.g. 2s, 500ms); must be less than idle-timeout")
-	flag.IntVar(&clientIDSize, "clientid-size", 2, "client ID size in bytes")
+	flag.IntVar(&clientIDSize, "clientid-size", 1, "client ID size in bytes")
 	flag.StringVar(&recordTypeStr, "record-type", "txt", "DNS record type for downstream data (txt, null, cname, a, aaaa, mx, ns, srv, caa)")
 	flag.IntVar(&queueSize, "queue-size", turbotunnel.QueueSize, "packet queue size for DNS tunnel transport")
 	flag.IntVar(&kcpWindowSize, "kcp-window-size", 0, "KCP send/receive window size in packets (0 = queue-size/2)")
 	flag.StringVar(&queueOverflowStr, "queue-overflow", string(turbotunnel.DefaultQueueOverflowMode), "queue overflow behavior: drop or block")
 	flag.IntVar(&responseQueueSize, "response-queue-size", defaultResponseQueueSize, "pending DNS response queue size (0 = queue-size)")
 	flag.IntVar(&responseWorkers, "response-workers", defaultResponseWorkers, "number of DNS response sender workers")
-	flag.StringVar(&responseDelayStr, "response-delay", defaultResponseDelay.String(), "maximum time to hold a DNS response open for downstream data (e.g. 100ms, 200ms)")
+	flag.StringVar(&responseDelayStr, "response-delay", defaultResponseDelay.String(), "maximum time to hold a DNS response open for downstream data (e.g. 200ms, 500ms)")
 
 	var logLevel string
 	flag.StringVar(&logLevel, "log-level", "info", "log level (debug, info, warning, error)")
@@ -1173,10 +1174,6 @@ Example:
 	}
 	if domainArg == "" {
 		fmt.Fprintf(os.Stderr, "the -domain option is required\n")
-		os.Exit(1)
-	}
-	if upstream == "" {
-		fmt.Fprintf(os.Stderr, "the -upstream option is required\n")
 		os.Exit(1)
 	}
 	domain, err := dns.ParseName(domainArg)
@@ -1216,6 +1213,11 @@ Example:
 
 	if udpAddr == "" {
 		fmt.Fprintf(os.Stderr, "the -udp option is required\n")
+		os.Exit(1)
+	}
+	udpAddr, err = udpaddr.Normalize(udpAddr)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "invalid -udp: %v\n", err)
 		os.Exit(1)
 	}
 	dnsConn, err := net.ListenPacket("udp", udpAddr)

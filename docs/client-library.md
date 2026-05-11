@@ -41,7 +41,7 @@ r, _ := client.NewResolver("8.8.8.8:53")
 ts, _ := client.NewTunnelServer("t.example.com")
 t, _ := client.NewTunnel(r, ts)
 
-t.ListenAndServe("127.0.0.1:7000") // blocks, handles reconnection
+t.ListenAndServe("127.0.0.1:10888") // blocks, handles reconnection
 ```
 
 `ListenAndServe` opens a local TCP listener, creates tunnel sessions with automatic reconnection on failure, and forwards connections through the tunnel.
@@ -63,14 +63,14 @@ All configuration is done through struct fields before calling `Initiate*` or `L
 // Resolver options
 r.DialerControl = controlFunc                   // socket options callback (SO_MARK, SO_BINDTODEVICE, etc.)
 r.UDPWorkers = 200                              // concurrent UDP workers
-r.UDPSharedSocket = true                        // single socket mode
-r.UDPTimeout = 500 * time.Millisecond           // per-query timeout
+r.UDPSharedSocket = true                        // single socket mode; CLI default
+r.UDPTimeout = 800 * time.Millisecond           // per-query timeout
 r.UDPAcceptErrors = true                        // accept non-NOERROR responses (disables forged filtering)
 
 // Tunnel server options
 ts.ClientIDSize = 1      // smaller ClientID
-ts.MaxQnameLen = 101     // QNAME length constraint
-ts.MaxNumLabels = 2      // label count constraint
+ts.MaxQnameLen = 99      // QNAME length constraint
+ts.MaxNumLabels = 1      // label count constraint
 ts.RPS = 200             // rate limit queries/second
 ts.RecordType = "cname"  // DNS record type for downstream data: txt, null, cname, a, aaaa, mx, ns, srv, caa (default: "txt")
 
@@ -85,8 +85,8 @@ t.ReconnectMaxDelay = 30 * time.Second
 t.PollDelay = 500 * time.Millisecond
 t.ActivePollDelay = 200 * time.Millisecond
 t.PollMaxDelay = 2 * time.Second
-t.UDPTransportStaleTimeout = 10 * time.Second
-t.OpenStreamFailureLimit = 10
+t.UDPTransportStaleTimeout = 3 * time.Second
+t.OpenStreamFailureLimit = 3
 
 // Transport queue options
 t.PacketQueueSize = 512                                // queue capacity

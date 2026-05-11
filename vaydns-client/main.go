@@ -15,6 +15,7 @@ import (
 	"github.com/net2share/vaydns/client"
 	"github.com/net2share/vaydns/dns"
 	"github.com/net2share/vaydns/turbotunnel"
+	"github.com/net2share/vaydns/udpaddr"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -41,7 +42,7 @@ func main() {
 	var openStreamFailureLimit int
 	var maxStreams int
 	var udpWorkers int
-	var udpSharedSocket bool
+	var udpPerQuerySockets bool
 	var udpTimeoutStr string
 	var udpAcceptErrors bool
 	var clientIDSize int
@@ -78,9 +79,9 @@ Examples:
 	}
 	flag.StringVar(&udpAddr, "udp", "", "address of UDP DNS resolver")
 	flag.StringVar(&domainArg, "domain", "", "tunnel domain (e.g., t.example.com)")
-	flag.StringVar(&listenAddr, "listen", "", "TCP address to listen on for local connections (e.g., 127.0.0.1:7000)")
-	flag.IntVar(&maxQnameLen, "max-qname-len", 101, "maximum total QNAME length in wire format (0 = 253 per RFC 1035)")
-	flag.IntVar(&maxNumLabels, "max-num-labels", 0, "maximum number of data labels in query name (0 = unlimited)")
+	flag.StringVar(&listenAddr, "listen", "127.0.0.1:10888", "TCP address to listen on for local connections (default 127.0.0.1:10888)")
+	flag.IntVar(&maxQnameLen, "max-qname-len", 99, "maximum total QNAME length in wire format (0 = 253 per RFC 1035)")
+	flag.IntVar(&maxNumLabels, "max-num-labels", 1, "maximum number of data labels in query name (0 = unlimited)")
 	flag.Float64Var(&rpsLimit, "rps", 0, "limit outgoing DNS queries per second (0 = unlimited)")
 	flag.StringVar(&idleTimeoutStr, "idle-timeout", client.DefaultIdleTimeout.String(), "session idle timeout (e.g. 10s, 1m); reconnects if no data received within this period")
 	flag.StringVar(&keepAliveStr, "keepalive", client.DefaultKeepAlive.String(), "keepalive ping interval (e.g. 2s, 500ms); must be less than idle-timeout")
@@ -94,11 +95,11 @@ Examples:
 	flag.StringVar(&udpTransportStaleTimeoutStr, "udp-transport-stale-timeout", client.DefaultUDPTransportStaleTimeout.String(), "retire the current session if per-query UDP sees no valid response for this long while streams need transport")
 	flag.IntVar(&openStreamFailureLimit, "open-stream-failure-limit", client.DefaultOpenStreamFailureLimit, "retire an idle session after this many consecutive stream-open failures")
 	flag.IntVar(&maxStreams, "max-streams", client.DefaultMaxStreams, "max concurrent streams per session (0 = unlimited)")
-	flag.IntVar(&udpWorkers, "udp-workers", client.DefaultUDPWorkers, "number of concurrent UDP worker goroutines")
-	flag.BoolVar(&udpSharedSocket, "udp-shared-socket", false, "use a single shared UDP socket instead of per-query sockets")
-	flag.StringVar(&udpTimeoutStr, "udp-timeout", client.DefaultUDPResponseTimeout.String(), "per-query UDP response timeout (e.g. 200ms, 1s)")
+	flag.IntVar(&udpWorkers, "udp-workers", client.DefaultUDPWorkers, "number of concurrent UDP worker goroutines (used with -udp-per-query-sockets)")
+	flag.BoolVar(&udpPerQuerySockets, "udp-per-query-sockets", false, "use per-query UDP sockets instead of the default shared socket")
+	flag.StringVar(&udpTimeoutStr, "udp-timeout", client.DefaultUDPResponseTimeout.String(), "per-query UDP response timeout (e.g. 800ms, 1s)")
 	flag.BoolVar(&udpAcceptErrors, "udp-accept-errors", false, "accept DNS error responses instead of filtering them (disables censorship evasion)")
-	flag.IntVar(&clientIDSize, "clientid-size", 2, "client ID size in bytes")
+	flag.IntVar(&clientIDSize, "clientid-size", 1, "client ID size in bytes")
 	flag.StringVar(&recordTypeStr, "record-type", "txt", "DNS record type for downstream data (txt, null, cname, a, aaaa, mx, ns, srv, caa)")
 	flag.IntVar(&queueSize, "queue-size", turbotunnel.QueueSize, "packet queue size for transport and DNS layers")
 	flag.IntVar(&kcpWindowSize, "kcp-window-size", 0, "KCP send/receive window size in packets (0 = queue-size/2)")
@@ -131,10 +132,6 @@ Examples:
 		fmt.Fprintf(os.Stderr, "the -domain option is required\n")
 		os.Exit(1)
 	}
-	if listenAddr == "" {
-		fmt.Fprintf(os.Stderr, "the -listen option is required\n")
-		os.Exit(1)
-	}
 	log.Infof("using domain: %s", domainArg)
 
 	if _, err := dns.ParseRecordType(recordTypeStr); err != nil {
@@ -146,6 +143,11 @@ Examples:
 
 	if udpAddr == "" {
 		fmt.Fprintf(os.Stderr, "the -udp option is required\n")
+		os.Exit(1)
+	}
+	udpAddr, err = udpaddr.Normalize(udpAddr)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "invalid -udp: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -283,14 +285,14 @@ Examples:
 		os.Exit(1)
 	}
 	resolver.UDPWorkers = udpWorkers
-	resolver.UDPSharedSocket = udpSharedSocket
+	resolver.UDPSharedSocket = !udpPerQuerySockets
 	resolver.UDPTimeout = udpTimeout
 	resolver.UDPAcceptErrors = udpAcceptErrors
 	if udpAcceptErrors {
-		if udpSharedSocket {
-			log.Warnf("-udp-accept-errors has no effect when -udp-shared-socket is set")
+		if !udpPerQuerySockets {
+			log.Warnf("-udp-accept-errors has no effect unless -udp-per-query-sockets is set")
 		} else {
-			log.Warnf("-udp-accept-errors disables forged response filtering; per-query workers will accept the first response regardless of RCODE, which may cause connection failures under DNS injection")
+			log.Warnf("-udp-accept-errors disables forged response filtering; per-query sockets will accept the first response regardless of RCODE, which may cause connection failures under DNS injection")
 		}
 	}
 	// Build tunnel server config.

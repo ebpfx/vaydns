@@ -101,19 +101,19 @@ sudo ip6tables -t nat -I PREROUTING -i eth0 -p udp --dport 53 -j REDIRECT --to-p
 | -------------------- | ------------------------------------------ | ---------- |
 | `-udp ADDR`          | Listen address for UDP DNS                                        | (required) |
 | `-domain NAME`       | Tunnel domain                                                     | (required) |
-| `-upstream ADDR`     | Forward tunnel streams to this TCP address                        | (required) |
+| `-upstream ADDR`     | Forward tunnel streams to this TCP address                        | `127.0.0.1:10888` |
 | `-mtu N`             | Max UDP payload size for responses                                | `1232`     |
 | `-idle-timeout D`    | Session idle timeout (must match client)                          | `10s`      |
 | `-keepalive D`       | Keepalive ping interval (must match client, must be < idle-timeout) | `2s`      |
 | `-fallback ADDR`     | UDP endpoint to forward non-DNS packets to (e.g. `127.0.0.1:8888`) | —          |
-| `-clientid-size N`   | ClientID size in bytes                                              | `2`        |
+| `-clientid-size N`   | ClientID size in bytes                                              | `1`        |
 | `-record-type TYPE`  | DNS record type for downstream data: `txt`, `null`, `cname`, `a`, `aaaa`, `mx`, `ns`, `srv`, `caa`. Must match the client. | `txt`      |
 | `-queue-size N`      | Packet queue size for transport and DNS layers                    | `512`      |
 | `-kcp-window-size N` | KCP send/receive window size in packets (0 = queue-size/2)        | `0`        |
 | `-queue-overflow MODE` | Queue overflow behavior: `drop` (silent discard) or `block` (backpressure) | `drop`     |
 | `-response-queue-size N` | Pending DNS response queue size (0 = `queue-size`)            | `0`        |
 | `-response-workers N` | Number of DNS response sender workers                            | `2`        |
-| `-response-delay D`  | Max time to hold a DNS response open while waiting for downstream data | `200ms` |
+| `-response-delay D`  | Max time to hold a DNS response open while waiting for downstream data | `500ms` |
 | `-log-level LEVEL`   | Log level: debug, info, warning, error                            | `info`     |
 
 > **Note:** The server response queue is drop-based. When it fills, pending DNS responses are dropped and counted in the debug stats log as `response_dropped`.
@@ -131,7 +131,7 @@ sudo ip6tables -t nat -I PREROUTING -i eth0 -p udp --dport 53 -j REDIRECT --to-p
 | Flag                | Description                                                     |
 | ------------------- | --------------------------------------------------------------- |
 | `-domain NAME`      | Tunnel domain                                                   |
-| `-listen ADDR`      | Local TCP listen address                                        |
+| `-listen ADDR`      | Local TCP listen address                                        | `127.0.0.1:10888` |
 
 #### Session and recovery
 
@@ -141,11 +141,11 @@ sudo ip6tables -t nat -I PREROUTING -i eth0 -p udp --dport 53 -j REDIRECT --to-p
 | `-keepalive D`              | Keepalive ping interval (must match server, must be < idle-timeout)                         | `2s`   |
 | `-max-streams N`            | Max concurrent streams per session (0 = unlimited)                                          | `0`   |
 | `-open-stream-timeout D`    | Timeout for opening an smux stream                                                          | `10s`   |
-| `-open-stream-failure-limit N` | Retire an idle session after this many consecutive stream-open failures                  | `10`   |
+| `-open-stream-failure-limit N` | Retire an idle session after this many consecutive stream-open failures                  | `3`    |
 | `-reconnect-min D`          | Initial backoff delay for session reconnect                                                  | `1s`    |
 | `-reconnect-max D`          | Max backoff delay (must be >= reconnect-min)                                                 | `30s`   |
 | `-session-check-interval D` | How often the managed client checks session and transport health                             | `500ms` |
-| `-udp-transport-stale-timeout D` | Retire the current session if per-query UDP sees no valid response for this long while streams need transport | `10s` |
+| `-udp-transport-stale-timeout D` | Retire the current session if per-query UDP sees no valid response for this long while streams need transport | `3s` |
 
 > **Note:** `idle-timeout` and `keepalive` must be set to the same values on both client and server — mismatched values will cause one side to close the session before the other detects it. Keep `keepalive` well below `idle-timeout` (the default 5x ratio allows ~5 ping attempts before timeout).
 >
@@ -153,14 +153,14 @@ sudo ip6tables -t nat -I PREROUTING -i eth0 -p udp --dport 53 -j REDIRECT --to-p
 
 #### UDP transport tuning
 
-These flags only apply when using `-udp`. By default, each query is sent from a fresh socket with a randomized source port.
+These flags only apply when using `-udp`. By default, each query is sent through a shared UDP socket.
 
 | Flag                 | Description                                                                                                                                                | Default |
 | -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- | ------- |
 | `-udp-workers N`     | Concurrent UDP worker goroutines                                                                                                                           | `100`   |
-| `-udp-timeout D`     | Per-query response timeout — the total time a worker waits for a valid (NOERROR) response. Forged responses are discarded but the deadline is not extended — if no valid response arrives within this window, the query is abandoned. | `500ms` |
-| `-udp-shared-socket` | Use a single shared UDP socket instead of per-query sockets. By default, each query is sent from a new socket with a random ephemeral source port, making the tunnel harder to fingerprint or block by port. With this flag, all queries share one socket and source port for the lifetime of the client — blocking that port kills the tunnel. | `false` |
-| `-udp-accept-errors` | In per-query mode, accept the first DNS response regardless of RCODE instead of waiting for a NOERROR response. This disables forged response filtering — the worker stops waiting after the first forged response, so the real response is likely lost. Only useful for debugging; not recommended in production. Ignored when `-udp-shared-socket` is set. | `false` |
+| `-udp-timeout D`     | Per-query response timeout — the total time a worker waits for a valid (NOERROR) response. Forged responses are discarded but the deadline is not extended — if no valid response arrives within this window, the query is abandoned. | `800ms` |
+| `-udp-per-query-sockets` | Use per-query UDP sockets instead of the default shared socket. With this flag, each query is sent from a new socket with a random ephemeral source port, making the tunnel harder to fingerprint or block by port. Without it, all queries share one socket and source port for the lifetime of the client — blocking that port kills the tunnel. | `false` |
+| `-udp-accept-errors` | In per-query mode, accept the first DNS response regardless of RCODE instead of waiting for a NOERROR response. This disables forged response filtering — the worker stops waiting after the first forged response, so the real response is likely lost. Only useful for debugging; not recommended in production. Ignored when `-udp-per-query-sockets` is not set. | `false` |
 | `-poll-delay D`      | Base delay before sending an empty DNS poll when idle                                                                                                      | `500ms` |
 | `-active-poll-delay D` | Poll delay cap while streams are active or being opened                                                                                                  | `200ms` |
 | `-poll-max-delay D`  | Max idle backoff between empty DNS polls                                                                                                                   | `2s`    |
@@ -183,8 +183,8 @@ Some resolvers reject queries with long QNAMEs or too many labels.
 
 | Flag                | Description                                                                 | Default |
 | ------------------- | --------------------------------------------------------------------------- | ------- |
-| `-max-qname-len N`  | Max total QNAME length in wire format (0 = RFC 1035 max of 253)             | `101`   |
-| `-max-num-labels N` | Max data labels before the tunnel domain (0 = unlimited, 1 = most DNS-like) | `0`     |
+| `-max-qname-len N`  | Max total QNAME length in wire format (0 = RFC 1035 max of 253)             | `99`    |
+| `-max-num-labels N` | Max data labels before the tunnel domain (0 = unlimited, 1 = most DNS-like) | `1`     |
 
 These reduce upstream throughput but improve compatibility. The minimum effective MTU is 25 bytes — below that the client exits with an error.
 
@@ -194,14 +194,14 @@ These reduce upstream throughput but improve compatibility. The minimum effectiv
 > maxQnameLen >= dataLabelWireBytes + domainWireLen
 > ```
 >
-> Where `domainWireLen` is the wire-format length of the tunnel domain (`1 + len` per label — e.g. `t.example.com` = 14 bytes), and the client subtracts upstream framing overhead from the raw base32 capacity to derive the KCP MTU (`clientid-size + 1` bytes, so 3 bytes by default). With a domain like `t.example.com`, the default `max-qname-len=101` still yields about 50 bytes of effective MTU. The client exits if the resulting MTU falls below 25 bytes.
+> Where `domainWireLen` is the wire-format length of the tunnel domain (`1 + len` per label — e.g. `t.example.com` = 14 bytes), and the client subtracts upstream framing overhead from the raw base32 capacity to derive the KCP MTU (`clientid-size + 1` bytes, so 2 bytes by default). With a domain like `t.example.com`, the default `max-qname-len=99` still yields usable MTU headroom. The client exits if the resulting MTU falls below 25 bytes.
 
 #### Other
 
 | Flag               | Description                                                | Default         |
 | ------------------ | ---------------------------------------------------------- | --------------- |
 | `-rps N`           | Rate limit outgoing DNS queries per second (0 = unlimited). Uses a token bucket with 1-second burst allowance. | `0`             |
-| `-clientid-size N` | ClientID size in bytes | `2`             |
+| `-clientid-size N` | ClientID size in bytes | `1`             |
 | `-record-type TYPE` | DNS record type for downstream data: `txt`, `null`, `cname`, `a`, `aaaa`, `mx`, `ns`, `srv`, `caa`. Must match the server. | `txt`           |
 | `-log-level LEVEL` | Log level: debug, info, warning, error                     | `info`          |
 
