@@ -4,7 +4,6 @@ go 1.24.4
 
 require (
 	github.com/jellydator/ttlcache/v3 v3.4.0
-	github.com/refraction-networking/utls v1.8.2
 	github.com/sirupsen/logrus v1.9.4
 	github.com/xtaci/kcp-go/v5 v5.6.61
 	github.com/xtaci/smux v1.5.50

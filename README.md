@@ -1,15 +1,14 @@
 # VayDNS
 
-Userspace DNS tunnel with support for DoH, DoT, and plaintext UDP.
+Userspace DNS tunnel with plaintext UDP transport.
 
 > VayDNS is a fork of [dnstt](https://www.bamsoftware.com/software/dnstt/) by David Fifield, with protocol optimizations and additional features. The transport and wire protocol have diverged and are no longer compatible with upstream dnstt.
 
 ## Features
 
-- **Multiple transports** — DNS over HTTPS (DoH), DNS over TLS (DoT), and plaintext UDP
+- **Plain UDP transport** — direct DNS queries with per-query socket rotation
 - **Reliable delivery** — KCP/smux session protocol with automatic retransmission
 - **Lean transport stack** — smux directly over KCP to minimize per-packet overhead
-- **TLS fingerprint camouflage** — uTLS randomizes the client's TLS fingerprint
 - **Censorship resistance** — per-query UDP sockets with forged-response filtering
 - **Auto-recovery** — client automatically reconnects on session failure
 
@@ -18,7 +17,7 @@ Userspace DNS tunnel with support for DoH, DoT, and plaintext UDP.
 ```
 .------.  |            .---------.             .------.
 |tunnel|  |            | public  |             |tunnel|
-|client|<---DoH/DoT--->|recursive|<--UDP DNS-->|server|
+|client|<---UDP DNS--->|recursive|<--UDP DNS-->|server|
 '------'  |c           |resolver |             '------'
    |      |e           '---------'                |
 .------.  |n                                   .------.
@@ -52,7 +51,7 @@ ncat -l -k -v 127.0.0.1 8000
 
 ### 3. Run the client
 
-Choose a public resolver. Lists of DoH resolvers: [curl wiki](https://github.com/curl/curl/wiki/DNS-over-HTTPS#publicly-available-servers). DoT resolvers: [dnsprivacy.org](https://dnsprivacy.org/wiki/display/DP/DNS+Privacy+Public+Resolvers#DNSPrivacyPublicResolvers-DNS-over-TLS%28DoT%29), [dnsencryption.info](https://dnsencryption.info/imc19-doe.html).
+Choose a public UDP resolver, or point the client directly at your own server with `-udp`.
 
 Using plaintext UDP (no covertness):
 
@@ -60,22 +59,6 @@ Using plaintext UDP (no covertness):
 ./vaydns-client -udp 8.8.8.8:53 \
   -domain t.example.com -listen 127.0.0.1:7000
 ```
-
-Using DoH:
-
-```sh
-./vaydns-client -doh https://doh.example/dns-query \
-  -domain t.example.com -listen 127.0.0.1:7000
-```
-
-Using DoT:
-
-```sh
-./vaydns-client -dot dot.example:853 \
-  -domain t.example.com -listen 127.0.0.1:7000
-```
-
-The transport no longer has a built-in authentication or encryption layer. DoH and DoT only protect the client-to-resolver hop; use HTTPS, SSH, TLS, or another secure protocol inside the tunnel if you need end-to-end confidentiality or integrity.
 
 ### 4. Test
 
@@ -141,8 +124,6 @@ sudo ip6tables -t nat -I PREROUTING -i eth0 -p udp --dport 53 -j REDIRECT --to-p
 
 | Flag        | Description                                      |
 | ----------- | ------------------------------------------------ |
-| `-doh URL`  | Use DNS over HTTPS with the given resolver URL   |
-| `-dot ADDR` | Use DNS over TLS with the given resolver address |
 | `-udp ADDR` | Use plaintext UDP DNS (no covertness)            |
 
 #### Required
@@ -186,7 +167,7 @@ These flags only apply when using `-udp`. By default, each query is sent from a 
 
 #### Queue and KCP tuning
 
-These flags apply to all transports (UDP, DoH, DoT) on the client side. The server has the same flags.
+These flags apply to the UDP transport on the client side. The server has the same flags where applicable.
 
 | Flag                   | Description                                                        | Default |
 | ---------------------- | ------------------------------------------------------------------ | ------- |
@@ -222,21 +203,7 @@ These reduce upstream throughput but improve compatibility. The minimum effectiv
 | `-rps N`           | Rate limit outgoing DNS queries per second (0 = unlimited). Uses a token bucket with 1-second burst allowance. | `0`             |
 | `-clientid-size N` | ClientID size in bytes | `2`             |
 | `-record-type TYPE` | DNS record type for downstream data: `txt`, `null`, `cname`, `a`, `aaaa`, `mx`, `ns`, `srv`, `caa`. Must match the server. | `txt`           |
-| `-utls SPEC`       | TLS fingerprint distribution (see below)                   | weighted random |
 | `-log-level LEVEL` | Log level: debug, info, warning, error                     | `info`          |
-
-### TLS fingerprinting (client)
-
-The client uses [uTLS](https://github.com/refraction-networking/utls) to disguise its TLS fingerprint. The `-utls` flag accepts a comma-separated list of fingerprints, optionally weighted:
-
-```sh
-./vaydns-client -utls '3*Firefox,2*Chrome,1*iOS' ...
-./vaydns-client -utls Firefox ...
-./vaydns-client -utls random ...   # fully randomized fingerprint
-./vaydns-client -utls none ...     # native Go TLS (less covert, more compatible)
-```
-
-Run `./vaydns-client -help` to see all available fingerprint names.
 
 ## Proxy examples
 
@@ -252,7 +219,7 @@ ncat -l -k --proxy-type http 127.0.0.1 8000
 ./vaydns-server -udp :5300 -domain t.example.com -upstream 127.0.0.1:8000
 
 # Client
-./vaydns-client -doh https://doh.example/dns-query -domain t.example.com -listen 127.0.0.1:7000
+./vaydns-client -udp 8.8.8.8:53 -domain t.example.com -listen 127.0.0.1:7000
 curl --proxy http://127.0.0.1:7000/ https://wtfismyip.com/text
 ```
 
@@ -266,7 +233,7 @@ ssh -N -D 127.0.0.1:8000 -o NoHostAuthenticationForLocalhost=yes 127.0.0.1
 ./vaydns-server -udp :5300 -domain t.example.com -upstream 127.0.0.1:8000
 
 # Client
-./vaydns-client -doh https://doh.example/dns-query -domain t.example.com -listen 127.0.0.1:7000
+./vaydns-client -udp 8.8.8.8:53 -domain t.example.com -listen 127.0.0.1:7000
 curl --proxy socks5h://127.0.0.1:7000/ https://wtfismyip.com/text
 ```
 
@@ -277,7 +244,7 @@ Client-side SOCKS (private, SSH through the tunnel). Ensure `AllowTcpForwarding 
 ./vaydns-server -udp :5300 -domain t.example.com -upstream 127.0.0.1:22
 
 # Client — tunnel SSH, then SOCKS through SSH
-./vaydns-client -doh https://doh.example/dns-query -domain t.example.com -listen 127.0.0.1:8000
+./vaydns-client -udp 8.8.8.8:53 -domain t.example.com -listen 127.0.0.1:8000
 ssh -N -D 127.0.0.1:7000 -o HostKeyAlias=tunnel-server -p 8000 127.0.0.1
 curl --proxy socks5h://127.0.0.1:7000/ https://wtfismyip.com/text
 ```
@@ -289,7 +256,7 @@ curl --proxy socks5h://127.0.0.1:7000/ https://wtfismyip.com/text
 ./vaydns-server -udp :5300 -domain t.example.com -upstream 127.0.0.1:9001
 
 # Client
-./vaydns-client -doh https://doh.example/dns-query -domain t.example.com -listen 127.0.0.1:7000
+./vaydns-client -udp 8.8.8.8:53 -domain t.example.com -listen 127.0.0.1:7000
 ```
 
 Add to `/etc/tor/torrc` or Tor Browser (`FINGERPRINT` from `/var/lib/tor/fingerprint`):
@@ -311,18 +278,18 @@ application data
 smux              (stream multiplexing)
 KCP               (reliable delivery over datagrams)
 DNS messages
-DoH / DoT / UDP
+UDP DNS transport
 ```
 
-VayDNS does not provide a separate end-to-end authentication or encryption layer. DoH and DoT only protect DNS traffic between the client and the recursive resolver. Anyone at the resolver, or on the path between the resolver and the tunnel server, can inspect tunneled contents unless the application inside the tunnel uses its own encryption.
+VayDNS does not add end-to-end confidentiality or authentication to the tunnel payloads. The DNS transport is plain UDP, so anyone on the path can inspect the resolver traffic.
 
 ### Covertness
 
-DoH/DoT hides tunnel traffic from local network observers — they can see you're connecting to a resolver but not the tunnel destination or contents. An observer can likely infer from traffic volume that a tunnel is being used, but cannot determine the remote endpoint or read the contents. Without DoH/DoT (plaintext UDP), the tunnel is visible to anyone on the path, including its destination.
+The UDP transport is visible to local network observers. An observer can likely infer from traffic volume that a tunnel is being used, and can also see the resolver destination.
 
-Observers between the resolver and the tunnel server (including the resolver itself) can identify the tunnel, its destination, and its contents.
+Observers between the resolver and the tunnel server, including the resolver itself, can identify the tunnel, its destination, and its contents.
 
-An observer watching traffic leaving the tunnel server can see any unencrypted data the server forwards (e.g., to a proxy). To protect this leg, use end-to-end encryption (HTTPS, SSH, etc.) inside the tunnel.
+An observer watching traffic leaving the tunnel server can see any unprotected data the server forwards. To protect this leg, use your own application-layer security inside the tunnel.
 
 ### Payload sizes
 

@@ -17,7 +17,7 @@ There are two ways to use the library:
 For embedding in frameworks like xray-core where you need control over each layer:
 
 ```go
-r, _ := client.NewResolver(client.ResolverTypeUDP, "8.8.8.8:53")
+r, _ := client.NewResolver("8.8.8.8:53")
 ts, _ := client.NewTunnelServer("t.example.com")
 t, _ := client.NewTunnel(r, ts)
 
@@ -37,7 +37,7 @@ Each `Initiate*` method sets up one layer of the protocol stack. `OpenStream()` 
 For standalone clients that need automatic session management and reconnection:
 
 ```go
-r, _ := client.NewResolver(client.ResolverTypeUDP, "8.8.8.8:53")
+r, _ := client.NewResolver("8.8.8.8:53")
 ts, _ := client.NewTunnelServer("t.example.com")
 t, _ := client.NewTunnel(r, ts)
 
@@ -50,18 +50,10 @@ t.ListenAndServe("127.0.0.1:7000") // blocks, handles reconnection
 
 | Type | Description |
 |------|-------------|
-| `Resolver` | DNS transport configuration (UDP, DoT, or DoH) |
+| `Resolver` | DNS transport configuration for UDP |
 | `TunnelServer` | Server domain + wire protocol settings |
 | `Tunnel` | Main tunnel connection with session and timeout configuration |
 | `Outbound` | High-level API for multiple resolver/server pairs |
-
-## Resolver types
-
-```go
-client.ResolverTypeUDP  // plaintext UDP DNS
-client.ResolverTypeDOT  // DNS over TLS (RFC 7858)
-client.ResolverTypeDOH  // DNS over HTTPS (RFC 8484)
-```
 
 ## Configuration
 
@@ -69,8 +61,6 @@ All configuration is done through struct fields before calling `Initiate*` or `L
 
 ```go
 // Resolver options
-r.UTLSClientHelloID = &utls.ClientHelloID{...} // TLS fingerprint
-r.RoundTripper = customTransport                // custom HTTP transport for DoH (overrides UTLSClientHelloID)
 r.DialerControl = controlFunc                   // socket options callback (SO_MARK, SO_BINDTODEVICE, etc.)
 r.UDPWorkers = 200                              // concurrent UDP workers
 r.UDPSharedSocket = true                        // single socket mode

@@ -161,8 +161,8 @@ func forgedInfoMilestone(total uint64) bool {
 //
 // DNSPacketConn does not handle the mechanics of actually sending and receiving
 // encoded DNS messages. That is rather the responsibility of some other
-// net.PacketConn such as net.UDPConn, HTTPPacketConn, or TLSPacketConn, one of
-// which must be provided to NewDNSPacketConn.
+// net.PacketConn such as net.UDPConn, one of which must be provided to
+// NewDNSPacketConn.
 //
 // We don't have a need to match up a query and a response by ID. Queries and
 // responses are vehicles for carrying data and for our purposes don't need to

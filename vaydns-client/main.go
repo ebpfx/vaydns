@@ -2,7 +2,7 @@
 //
 // Usage:
 //
-//	vaydns-client [-doh URL|-dot ADDR|-udp ADDR] -domain DOMAIN -listen LOCALADDR
+//	vaydns-client -udp ADDR -domain DOMAIN -listen LOCALADDR
 package main
 
 import (
@@ -22,12 +22,9 @@ var version = "dev"
 
 func main() {
 	var showVersion bool
-	var dohURL string
-	var dotAddr string
 	var domainArg string
 	var listenAddr string
 	var udpAddr string
-	var utlsDistribution string
 	var maxQnameLen int
 	var maxNumLabels int
 	var rpsLimit float64
@@ -55,11 +52,10 @@ func main() {
 
 	flag.Usage = func() {
 		fmt.Fprintf(flag.CommandLine.Output(), `Usage:
-  %[1]s [-doh URL|-dot ADDR|-udp ADDR] -domain DOMAIN -listen LOCALADDR
+  %[1]s -udp ADDR -domain DOMAIN -listen LOCALADDR
 
 Examples:
-  %[1]s -doh https://resolver.example/dns-query -domain t.example.com -listen 127.0.0.1:7000
-  %[1]s -dot resolver.example:853 -domain t.example.com -listen 127.0.0.1:7000
+  %[1]s -udp 8.8.8.8:53 -domain t.example.com -listen 127.0.0.1:7000
 
 `, os.Args[0])
 		flag.CommandLine.VisitAll(func(f *flag.Flag) {
@@ -79,34 +75,8 @@ Examples:
 			}
 			fmt.Fprint(flag.CommandLine.Output(), "\n")
 		})
-		labels := make([]string, 0)
-		labels = append(labels, "none")
-		for _, entry := range client.UTLSClientHelloIDMap() {
-			labels = append(labels, entry.Label)
-		}
-		fmt.Fprintf(flag.CommandLine.Output(), `
-Known TLS fingerprints for -utls are:
-`)
-		i := 0
-		for i < len(labels) {
-			var line strings.Builder
-			fmt.Fprintf(&line, "  %s", labels[i])
-			w := 2 + len(labels[i])
-			i++
-			for i < len(labels) && w+1+len(labels[i]) <= 72 {
-				fmt.Fprintf(&line, " %s", labels[i])
-				w += 1 + len(labels[i])
-				i++
-			}
-			fmt.Fprintln(flag.CommandLine.Output(), line.String())
-		}
 	}
-	flag.StringVar(&dohURL, "doh", "", "URL of DoH resolver")
-	flag.StringVar(&dotAddr, "dot", "", "address of DoT resolver")
 	flag.StringVar(&udpAddr, "udp", "", "address of UDP DNS resolver")
-	flag.StringVar(&utlsDistribution, "utls",
-		"4*random,3*Firefox_120,1*Firefox_105,3*Chrome_120,1*Chrome_102,1*iOS_14,1*iOS_13",
-		"choose TLS fingerprint from weighted distribution")
 	flag.StringVar(&domainArg, "domain", "", "tunnel domain (e.g., t.example.com)")
 	flag.StringVar(&listenAddr, "listen", "", "TCP address to listen on for local connections (e.g., 127.0.0.1:7000)")
 	flag.IntVar(&maxQnameLen, "max-qname-len", 101, "maximum total QNAME length in wire format (0 = 253 per RFC 1035)")
@@ -174,41 +144,8 @@ Known TLS fingerprints for -utls are:
 	recordTypeStr = strings.ToLower(recordTypeStr)
 	log.Infof("record type: %s", recordTypeStr)
 
-	// Select uTLS fingerprint.
-	utlsClientHelloID, err := client.SampleUTLSDistribution(utlsDistribution)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "parsing -utls: %v\n", err)
-		os.Exit(1)
-	}
-	if utlsClientHelloID != nil {
-		log.Infof("uTLS fingerprint %s %s", utlsClientHelloID.Client, utlsClientHelloID.Version)
-	}
-
-	// Select resolver transport.
-	var resolverType client.ResolverType
-	var resolverAddr string
-	transportCount := 0
-	if dohURL != "" {
-		resolverType = client.ResolverTypeDOH
-		resolverAddr = dohURL
-		transportCount++
-	}
-	if dotAddr != "" {
-		resolverType = client.ResolverTypeDOT
-		resolverAddr = dotAddr
-		transportCount++
-	}
-	if udpAddr != "" {
-		resolverType = client.ResolverTypeUDP
-		resolverAddr = udpAddr
-		transportCount++
-	}
-	if transportCount == 0 {
-		fmt.Fprintf(os.Stderr, "one of -doh, -dot, or -udp is required\n")
-		os.Exit(1)
-	}
-	if transportCount > 1 {
-		fmt.Fprintf(os.Stderr, "only one of -doh, -dot, and -udp may be given\n")
+	if udpAddr == "" {
+		fmt.Fprintf(os.Stderr, "the -udp option is required\n")
 		os.Exit(1)
 	}
 
@@ -340,12 +277,11 @@ Known TLS fingerprints for -utls are:
 	}
 
 	// Build resolver.
-	resolver, err := client.NewResolver(resolverType, resolverAddr)
+	resolver, err := client.NewResolver(udpAddr)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "resolver: %v\n", err)
 		os.Exit(1)
 	}
-	resolver.UTLSClientHelloID = utlsClientHelloID
 	resolver.UDPWorkers = udpWorkers
 	resolver.UDPSharedSocket = udpSharedSocket
 	resolver.UDPTimeout = udpTimeout
