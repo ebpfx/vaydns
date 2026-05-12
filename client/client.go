@@ -134,7 +134,7 @@ func (ts *TunnelServer) effectiveMaxQnameLen() int {
 	if ts.MaxQnameLen > 0 {
 		return ts.MaxQnameLen
 	}
-	return 101
+	return 99
 }
 
 // Tunnel represents a DNS tunnel connection. Create with NewTunnel, then
