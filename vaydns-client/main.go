@@ -33,7 +33,6 @@ func main() {
 	var keepAliveStr string
 	var reconnectMinStr string
 	var reconnectMaxStr string
-	var sessionCheckIntervalStr string
 	var openStreamTimeoutStr string
 	var pollDelayStr string
 	var activePollDelayStr string
@@ -60,9 +59,6 @@ Examples:
 
 `, os.Args[0])
 		flag.CommandLine.VisitAll(func(f *flag.Flag) {
-			if f.Name == "session-check-interval" {
-				return
-			}
 			fmt.Fprintf(flag.CommandLine.Output(), "  -%s", f.Name)
 			name, usage := flag.UnquoteUsage(f)
 			if len(name) > 0 {
@@ -87,7 +83,6 @@ Examples:
 	flag.StringVar(&keepAliveStr, "keepalive", client.DefaultKeepAlive.String(), "keepalive ping interval (e.g. 2s, 500ms); must be less than idle-timeout")
 	flag.StringVar(&reconnectMinStr, "reconnect-min", client.DefaultReconnectDelay.String(), "minimum delay before retrying session creation (e.g. 500ms, 1s)")
 	flag.StringVar(&reconnectMaxStr, "reconnect-max", client.DefaultReconnectMaxDelay.String(), "maximum delay before retrying session creation (e.g. 5s, 30s)")
-	flag.StringVar(&sessionCheckIntervalStr, "session-check-interval", client.DefaultSessionCheckInterval.String(), "interval for checking whether the current session is still alive (e.g. 100ms, 500ms)")
 	flag.StringVar(&openStreamTimeoutStr, "open-stream-timeout", client.DefaultOpenStreamTimeout.String(), "timeout for opening an smux stream (e.g. 500ms, 3s)")
 	flag.StringVar(&pollDelayStr, "poll-delay", client.DefaultPollDelay.String(), "base delay before sending an empty DNS poll when idle (e.g. 500ms, 1s)")
 	flag.StringVar(&activePollDelayStr, "active-poll-delay", client.DefaultActivePollDelay.String(), "poll delay cap while streams are active or being opened (e.g. 100ms, 200ms)")
@@ -172,11 +167,6 @@ Examples:
 		fmt.Fprintf(os.Stderr, "invalid -reconnect-max: %v\n", err)
 		os.Exit(1)
 	}
-	sessionCheckInterval, err := time.ParseDuration(sessionCheckIntervalStr)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "invalid -session-check-interval: %v\n", err)
-		os.Exit(1)
-	}
 	openStreamTimeout, err := time.ParseDuration(openStreamTimeoutStr)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "invalid -open-stream-timeout: %v\n", err)
@@ -219,10 +209,6 @@ Examples:
 	}
 	if reconnectMaxDelay < reconnectMinDelay {
 		fmt.Fprintf(os.Stderr, "-reconnect-max (%s) must be greater than or equal to -reconnect-min (%s)\n", reconnectMaxDelay, reconnectMinDelay)
-		os.Exit(1)
-	}
-	if sessionCheckInterval <= 0 {
-		fmt.Fprintf(os.Stderr, "-session-check-interval (%s) must be greater than 0\n", sessionCheckInterval)
 		os.Exit(1)
 	}
 	if openStreamTimeout <= 0 {
@@ -319,7 +305,6 @@ Examples:
 	tunnel.MaxStreams = maxStreams
 	tunnel.ReconnectMinDelay = reconnectMinDelay
 	tunnel.ReconnectMaxDelay = reconnectMaxDelay
-	tunnel.SessionCheckInterval = sessionCheckInterval
 	tunnel.PollDelay = pollDelay
 	tunnel.ActivePollDelay = activePollDelay
 	tunnel.PollMaxDelay = pollMaxDelay
