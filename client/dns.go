@@ -195,6 +195,8 @@ type DNSPacketConn struct {
 	pollMaxDelay    time.Duration
 	// Transport error reporting for session health monitoring
 	transportErr chan error
+	// lastSuccess tracks the time of the last successful response for stale detection
+	lastSuccess atomic.Int64
 	// QueuePacketConn is the direct receiver of ReadFrom and WriteTo calls.
 	// recvLoop and sendLoop take the messages out of the receive and send
 	// queues and actually put them on the network.
@@ -256,6 +258,9 @@ func newDNSPacketConn(transport net.PacketConn, addr net.Addr, domain dns.Name, 
 		transportErr:    make(chan error, 2),
 		QueuePacketConn: turbotunnel.NewQueuePacketConn(clientID, 0, queueSize, overflowMode),
 	}
+	// Arm stale detection immediately so a shared UDP socket that never
+	// receives a valid response can still be retired and rebuilt.
+	c.markSuccess()
 	go func() {
 		err := c.recvLoop(transport)
 		select {
@@ -293,6 +298,18 @@ func newDNSPacketConn(transport net.PacketConn, addr net.Addr, domain dns.Name, 
 // underlying transport goroutines (recvLoop and sendLoop).
 func (c *DNSPacketConn) TransportErrors() <-chan error {
 	return c.transportErr
+}
+
+func (c *DNSPacketConn) markSuccess() {
+	c.lastSuccess.Store(time.Now().UnixNano())
+}
+
+func (c *DNSPacketConn) lastSuccessTime() time.Time {
+	ns := c.lastSuccess.Load()
+	if ns == 0 {
+		return time.Time{}
+	}
+	return time.Unix(0, ns)
 }
 
 func (c *DNSPacketConn) currentPollDelay() time.Duration {
@@ -439,6 +456,9 @@ func (c *DNSPacketConn) recvLoop(transport net.PacketConn) error {
 			c.forgedStats.Record(resp.Flags & 0x000f)
 			continue
 		}
+
+		// Mark success on receiving valid response (pulled out packets for processing)
+		c.markSuccess()
 
 		// Pull out the packets contained in the payload.
 		r := bytes.NewReader(payload)

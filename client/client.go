@@ -158,8 +158,8 @@ type Tunnel struct {
 	PollDelay                time.Duration                 // default: 500ms
 	ActivePollDelay          time.Duration                 // default: 200ms
 	PollMaxDelay             time.Duration                 // default: 2s
-	UDPTransportStaleTimeout time.Duration                 // default: 10s (UDP per-query only)
-	OpenStreamFailureLimit   int                           // default: 10 consecutive idle failures
+	UDPTransportStaleTimeout time.Duration                 // default: 3s
+	OpenStreamFailureLimit   int                           // default: 3 consecutive idle failures
 
 	// internal state
 	wireConfig    turbotunnel.WireConfig
@@ -521,14 +521,10 @@ func (t *Tunnel) udpTransportStaleAge(requireTraffic bool) time.Duration {
 	if !requireTraffic || t.UDPTransportStaleTimeout <= 0 {
 		return 0
 	}
-	if t.Resolver.UDPSharedSocket {
+	if t.dnsPacketConn == nil {
 		return 0
 	}
-	udpConn, ok := t.resolverConn.(*UDPPacketConn)
-	if !ok {
-		return 0
-	}
-	lastSuccess := udpConn.lastSuccessTime()
+	lastSuccess := t.dnsPacketConn.lastSuccessTime()
 	if lastSuccess.IsZero() {
 		return 0
 	}
@@ -626,7 +622,7 @@ func (t *Tunnel) ListenAndServe(listenAddr string) error {
 			local, err := ln.Accept()
 			if err != nil {
 				if ne, ok := err.(net.Error); ok && ne.Timeout() {
-					if age := t.udpTransportStaleAge(t.activeStreams.Load() > 0); age > t.UDPTransportStaleTimeout {
+					if age := t.udpTransportStaleAge(true); age > t.UDPTransportStaleTimeout {
 						log.Warnf("session %08x transport stale after %s with %d active streams", conv, age.Round(time.Second), t.activeStreams.Load())
 						sessionAlive = false
 						continue
@@ -659,12 +655,6 @@ func (t *Tunnel) ListenAndServe(listenAddr string) error {
 				continue
 			default:
 			}
-			if age := t.udpTransportStaleAge(t.activeStreams.Load() > 0 || openFailCount.Load() > 0); age > t.UDPTransportStaleTimeout {
-				log.Warnf("session %08x transport stale after %s while streams need transport", conv, age.Round(time.Second))
-				local.Close()
-				sessionAlive = false
-				continue
-			}
 
 			go func(local *net.TCPConn, sess *smux.Session, conv uint32, openFailCount *atomic.Int32) {
 				if sem != nil {
@@ -672,10 +662,14 @@ func (t *Tunnel) ListenAndServe(listenAddr string) error {
 					defer func() { <-sem }()
 				}
 				defer local.Close()
+				if age := t.udpTransportStaleAge(true); age > t.UDPTransportStaleTimeout {
+					log.Warnf("session %08x transport stale after %s, closing connection", conv, age.Round(time.Second))
+					return
+				}
 				err := t.handleConn(local, sess, conv, openFailCount)
 				if err != nil {
 					log.Warnf("handle: %v", err)
-					if t.activeStreams.Load() == 0 {
+					if t.activeStreams.Load() == 1 {
 						failures := openFailCount.Add(1)
 						if failures >= int32(t.OpenStreamFailureLimit) && !sess.IsClosed() {
 							log.Warnf("session %08x retiring idle session after %d consecutive stream-open failures", conv, failures)
@@ -736,7 +730,7 @@ func (t *Tunnel) handleConn(local *net.TCPConn, sess *smux.Session, conv uint32,
 		}
 		return err
 	}
-	if openFailCount != nil {
+	if openFailCount != nil && t.activeStreams.Load() == 1 {
 		openFailCount.Store(0)
 	}
 
