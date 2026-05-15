@@ -669,13 +669,6 @@ func (t *Tunnel) ListenAndServe(listenAddr string) error {
 				err := t.handleConn(local, sess, conv, openFailCount)
 				if err != nil {
 					log.Warnf("handle: %v", err)
-					if t.activeStreams.Load() == 1 {
-						failures := openFailCount.Add(1)
-						if failures >= int32(t.OpenStreamFailureLimit) && !sess.IsClosed() {
-							log.Warnf("session %08x retiring idle session after %d consecutive stream-open failures", conv, failures)
-							sess.Close()
-						}
-					}
 				}
 			}(local.(*net.TCPConn), sess, conv, &openFailCount)
 		}
@@ -728,9 +721,16 @@ func (t *Tunnel) handleConn(local *net.TCPConn, sess *smux.Session, conv uint32,
 			log.Warnf("session %08x stream IDs exhausted; closing smux session for rollover", conv)
 			sess.Close()
 		}
+		if openFailCount != nil {
+			failures := openFailCount.Add(1)
+			if failures >= int32(t.OpenStreamFailureLimit) && !sess.IsClosed() {
+				log.Warnf("session %08x retiring session after %d consecutive stream-open failures", conv, failures)
+				sess.Close()
+			}
+		}
 		return err
 	}
-	if openFailCount != nil && t.activeStreams.Load() == 1 {
+	if openFailCount != nil {
 		openFailCount.Store(0)
 	}
 
