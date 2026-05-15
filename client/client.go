@@ -115,7 +115,7 @@ func NewTunnelServer(addr string) (TunnelServer, error) {
 func (ts *TunnelServer) wireConfig() turbotunnel.WireConfig {
 	size := ts.ClientIDSize
 	if size <= 0 {
-		size = 2
+		size = 1
 	}
 	return turbotunnel.WireConfig{ClientIDSize: size}
 }
