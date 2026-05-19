@@ -51,10 +51,13 @@ const (
 	RRTypeNS    = 2
 	RRTypeCNAME = 5
 	RRTypeNULL  = 10
+	RRTypeHINFO = 13
 	RRTypeMX    = 15
 	RRTypeTXT   = 16
 	RRTypeAAAA  = 28
 	RRTypeSRV   = 33
+	RRTypeCERT  = 37
+	RRTypeHTTPS = 65
 	RRTypeCAA   = 257
 	// https://tools.ietf.org/html/rfc6891#section-6.1.1
 	RRTypeOPT = 41
@@ -82,6 +85,8 @@ func ParseRecordType(s string) (uint16, error) {
 		return RRTypeCNAME, nil
 	case "null":
 		return RRTypeNULL, nil
+	case "hinfo":
+		return RRTypeHINFO, nil
 	case "a":
 		return RRTypeA, nil
 	case "aaaa":
@@ -92,10 +97,14 @@ func ParseRecordType(s string) (uint16, error) {
 		return RRTypeNS, nil
 	case "srv":
 		return RRTypeSRV, nil
+	case "cert":
+		return RRTypeCERT, nil
+	case "https":
+		return RRTypeHTTPS, nil
 	case "caa":
 		return RRTypeCAA, nil
 	default:
-		return 0, fmt.Errorf("unknown record type %q: must be one of: txt, cname, null, a, aaaa, mx, ns, srv, caa", s)
+		return 0, fmt.Errorf("unknown record type %q: must be one of: txt, cname, null, hinfo, a, aaaa, mx, ns, srv, cert, https, caa", s)
 	}
 }
 
@@ -444,6 +453,10 @@ func readRR(r io.ReadSeeker) (RR, error) {
 		if err := readRRName(6); err != nil {
 			return rr, err
 		}
+	case rdLength > 2 && rr.Type == RRTypeHTTPS:
+		if err := readRRName(2); err != nil {
+			return rr, err
+		}
 	default:
 		rr.Data = make([]byte, rdLength)
 		_, err = io.ReadFull(r, rr.Data)
@@ -706,6 +719,74 @@ func DecodeRDataNULL(p []byte) ([]byte, error) { return p, nil }
 // https://tools.ietf.org/html/rfc1035#section-3.3.10
 func EncodeRDataNULL(p []byte) []byte { return p }
 
+// DecodeRDataHINFO decodes HINFO RDATA back to the original payload.
+// https://tools.ietf.org/html/rfc1035#section-3.3.2
+func DecodeRDataHINFO(p []byte) ([]byte, error) {
+	if len(p) < 1 {
+		return nil, io.ErrUnexpectedEOF
+	}
+	cpuLen := int(p[0])
+	p = p[1:]
+	if len(p) < cpuLen {
+		return nil, io.ErrUnexpectedEOF
+	}
+	cpu := p[:cpuLen]
+	p = p[cpuLen:]
+
+	if len(p) < 1 {
+		return nil, io.ErrUnexpectedEOF
+	}
+	osLen := int(p[0])
+	p = p[1:]
+	if len(p) < osLen {
+		return nil, io.ErrUnexpectedEOF
+	}
+	os := p[:osLen]
+
+	return append(cpu, os...), nil
+}
+
+// EncodeRDataHINFO encodes a payload as HINFO RDATA.
+// https://tools.ietf.org/html/rfc1035#section-3.3.2
+func EncodeRDataHINFO(p []byte) []byte {
+	cpu := p
+	var os []byte
+	if len(cpu) > 255 {
+		cpu, os = p[:255], p[255:]
+		if len(os) > 255 {
+			os = os[:255]
+		}
+	}
+	rdata := make([]byte, 0, 2+len(cpu)+len(os))
+	rdata = append(rdata, byte(len(cpu)))
+	rdata = append(rdata, cpu...)
+	rdata = append(rdata, byte(len(os)))
+	rdata = append(rdata, os...)
+	return rdata
+}
+
+// DecodeRDataCERT decodes CERT RDATA back to the original payload.
+// https://datatracker.ietf.org/doc/html/rfc4398
+func DecodeRDataCERT(p []byte) ([]byte, error) {
+	if len(p) < 5 {
+		return nil, io.ErrUnexpectedEOF
+	}
+	return p[5:], nil
+}
+
+// EncodeRDataCERT encodes a payload as CERT RDATA.
+// https://datatracker.ietf.org/doc/html/rfc4398
+func EncodeRDataCERT(p []byte) []byte {
+	rdata := make([]byte, 5+len(p))
+	rdata[0] = 0x00
+	rdata[1] = 0x03
+	rdata[2] = 0x00
+	rdata[3] = 0x00
+	rdata[4] = 0x00
+	copy(rdata[5:], p)
+	return rdata
+}
+
 // DecodeRDataCAA decodes CAA RDATA and returns the value portion.
 // https://datatracker.ietf.org/doc/html/rfc8659
 func DecodeRDataCAA(p []byte) ([]byte, error) {
@@ -847,6 +928,28 @@ func DecodeRDataSRV(data []byte, domain Name) ([]byte, error) {
 	}
 	// Skip 6-byte header.
 	return decodePayloadFromName(data[6:], domain)
+}
+
+// EncodeRDataHTTPS encodes a payload as HTTPS RDATA.
+// https://datatracker.ietf.org/doc/html/rfc9460#section-2.2
+func EncodeRDataHTTPS(p []byte, domain Name) ([]byte, error) {
+	nameWire, err := encodePayloadAsName(p, domain)
+	if err != nil {
+		return nil, err
+	}
+	rdata := make([]byte, 2+len(nameWire))
+	rdata[1] = 0x01
+	copy(rdata[2:], nameWire)
+	return rdata, nil
+}
+
+// DecodeRDataHTTPS decodes HTTPS RDATA back to the original payload.
+// https://datatracker.ietf.org/doc/html/rfc9460#section-2.2
+func DecodeRDataHTTPS(data []byte, domain Name) ([]byte, error) {
+	if len(data) < 2 {
+		return nil, io.ErrUnexpectedEOF
+	}
+	return decodePayloadFromName(data[2:], domain)
 }
 
 // encodeRDataMultiRR encodes a payload as multiple fixed-size RDATA chunks.

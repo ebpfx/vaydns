@@ -107,7 +107,7 @@ sudo ip6tables -t nat -I PREROUTING -i eth0 -p udp --dport 53 -j REDIRECT --to-p
 | `-keepalive D`       | Keepalive ping interval (must match client, must be < idle-timeout) | `2s`      |
 | `-fallback ADDR`     | UDP endpoint to forward non-DNS packets to (e.g. `127.0.0.1:8888`) | —          |
 | `-clientid-size N`   | ClientID size in bytes                                              | `1`        |
-| `-record-type TYPE`  | DNS record type for downstream data: `txt`, `null`, `cname`, `a`, `aaaa`, `mx`, `ns`, `srv`, `caa`. Must match the client. | `txt`      |
+| `-record-type TYPE`  | DNS record type for downstream data: `txt`, `null`, `hinfo`, `cname`, `a`, `aaaa`, `mx`, `ns`, `srv`, `cert`, `https`, `caa`. Must match the client. | `txt`      |
 | `-queue-size N`      | Packet queue size for transport and DNS layers                    | `512`      |
 | `-kcp-window-size N` | KCP send/receive window size in packets (0 = queue-size/2)        | `0`        |
 | `-queue-overflow MODE` | Queue overflow behavior: `drop` (silent discard) or `block` (backpressure) | `drop`     |
@@ -202,7 +202,7 @@ These reduce upstream throughput but improve compatibility. The minimum effectiv
 | ------------------ | ---------------------------------------------------------- | --------------- |
 | `-rps N`           | Rate limit outgoing DNS queries per second (0 = unlimited). Uses a token bucket with 1-second burst allowance. | `0`             |
 | `-clientid-size N` | ClientID size in bytes | `1`             |
-| `-record-type TYPE` | DNS record type for downstream data: `txt`, `null`, `cname`, `a`, `aaaa`, `mx`, `ns`, `srv`, `caa`. Must match the server. | `txt`           |
+| `-record-type TYPE` | DNS record type for downstream data: `txt`, `null`, `hinfo`, `cname`, `a`, `aaaa`, `mx`, `ns`, `srv`, `cert`, `https`, `caa`. Must match the server. | `txt`           |
 | `-log-level LEVEL` | Log level: debug, info, warning, error                     | `info`          |
 
 ## Proxy examples
@@ -315,12 +315,15 @@ VayDNS supports multiple DNS record types for downstream data encoding. Both cli
 | ---- | ----------- | -------- |
 | `txt` | TXT record (default). Highest capacity. | Bounded by UDP payload (~1200 bytes) |
 | `null` | NULL record. Raw binary payload in a single RR. Some recursive resolvers may filter or refuse to relay NULL records. | Bounded by UDP payload |
+| `hinfo` | HINFO record. Payload split across CPU and OS character-string fields. | 510 bytes |
 | `cname` | CNAME record. Data encoded as a DNS name under the tunnel domain. | Bounded by 255-byte DNS name limit |
 | `ns` | NS record. Same encoding as CNAME. | Same as CNAME |
 | `mx` | MX record. 2-byte preference header + name encoding. | Same as CNAME |
 | `srv` | SRV record. 6-byte header + name encoding. | Same as CNAME |
 | `a` | A records. Data split into 4-byte chunks across multiple answer RRs. | Bounded by UDP payload |
 | `aaaa` | AAAA records. Data split into 16-byte chunks across multiple answer RRs. | Bounded by UDP payload |
+| `cert` | CERT record. 5-byte fixed header plus opaque certificate data. | Bounded by UDP payload |
+| `https` | HTTPS record. 2-byte SvcPriority header plus name encoding. | Same as CNAME |
 | `caa` | CAA record. Payload encoded in the value portion of a fixed `issue` property. | Bounded by UDP payload |
 
 ## Client library

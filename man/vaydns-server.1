@@ -118,6 +118,26 @@ Set the ClientID size in bytes.
 Default:
 .Cm 1 .
 
+.It Fl record-type Ar TYPE
+DNS record type for downstream data:
+.Cm txt ,
+.Cm null ,
+.Cm hinfo ,
+.Cm cname ,
+.Cm a ,
+.Cm aaaa ,
+.Cm mx ,
+.Cm ns ,
+.Cm srv ,
+.Cm cert ,
+.Cm https ,
+or
+.Cm caa .
+Must match the client's
+.Fl record-type .
+Default:
+.Cm txt .
+
 .It Fl queue-size Ar N
 Packet queue size for the DNS tunnel transport.
 Default:

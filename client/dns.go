@@ -172,8 +172,8 @@ type DNSPacketConn struct {
 	clientID   turbotunnel.ClientID
 	wireConfig turbotunnel.WireConfig
 	domain     dns.Name
-	// rrType is the DNS record type used for downstream data (TXT, NULL, CNAME,
-	// A, AAAA, MX, NS, SRV, or CAA).
+	// rrType is the DNS record type used for downstream data (TXT, NULL, HINFO,
+	// CNAME, A, AAAA, MX, NS, SRV, CERT, HTTPS, or CAA).
 	rrType uint16
 	// Sending on pollChan permits sendLoop to send an empty polling query.
 	// sendLoop also does its own polling according to a time schedule.
@@ -386,8 +386,12 @@ func dnsResponsePayload(resp *dns.Message, domain dns.Name, rrType uint16) ([]by
 	switch rrType {
 	case dns.RRTypeNULL:
 		payload, err = dns.DecodeRDataNULL(answer.Data)
+	case dns.RRTypeHINFO:
+		payload, err = dns.DecodeRDataHINFO(answer.Data)
 	case dns.RRTypeCAA:
 		payload, err = dns.DecodeRDataCAA(answer.Data)
+	case dns.RRTypeCERT:
+		payload, err = dns.DecodeRDataCERT(answer.Data)
 	case dns.RRTypeCNAME:
 		payload, err = dns.DecodeRDataCNAME(answer.Data, domain)
 	case dns.RRTypeNS:
@@ -396,6 +400,8 @@ func dnsResponsePayload(resp *dns.Message, domain dns.Name, rrType uint16) ([]by
 		payload, err = dns.DecodeRDataMX(answer.Data, domain)
 	case dns.RRTypeSRV:
 		payload, err = dns.DecodeRDataSRV(answer.Data, domain)
+	case dns.RRTypeHTTPS:
+		payload, err = dns.DecodeRDataHTTPS(answer.Data, domain)
 	default:
 		payload, err = dns.DecodeRDataTXT(answer.Data)
 	}

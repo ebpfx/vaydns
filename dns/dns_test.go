@@ -825,6 +825,79 @@ func TestEncodeDecodeRDataNULL(t *testing.T) {
 	}
 }
 
+func TestEncodeDecodeRDataHINFO(t *testing.T) {
+	for _, p := range [][]byte{
+		{},
+		{0x00},
+		bytes.Repeat([]byte{0xab}, 255),
+		bytes.Repeat([]byte{0xcd}, 510),
+		bytes.Repeat([]byte{0xef}, 600),
+	} {
+		rdata := EncodeRDataHINFO(p)
+		decoded, err := DecodeRDataHINFO(rdata)
+		if err != nil {
+			t.Errorf("DecodeRDataHINFO(%x): %v", rdata, err)
+			continue
+		}
+		want := p
+		if len(want) > 510 {
+			want = want[:510]
+		}
+		if !bytes.Equal(decoded, want) {
+			t.Errorf("HINFO round-trip failed for len=%d: got len=%d", len(want), len(decoded))
+		}
+	}
+}
+
+func TestDecodeRDataHINFO(t *testing.T) {
+	for _, test := range []struct {
+		p   []byte
+		err error
+	}{
+		{[]byte{}, io.ErrUnexpectedEOF},
+		{[]byte{0x01}, io.ErrUnexpectedEOF},
+		{[]byte{0x00}, io.ErrUnexpectedEOF},
+		{[]byte{0x00, 0x01}, io.ErrUnexpectedEOF},
+	} {
+		_, err := DecodeRDataHINFO(test.p)
+		if err != test.err {
+			t.Errorf("DecodeRDataHINFO(%x) = %v, want %v", test.p, err, test.err)
+		}
+	}
+}
+
+func TestEncodeDecodeRDataCERT(t *testing.T) {
+	for _, p := range [][]byte{
+		{},
+		{0x00},
+		{0x01, 0x02, 0x03},
+		bytes.Repeat([]byte{0xab}, 1000),
+	} {
+		rdata := EncodeRDataCERT(p)
+		decoded, err := DecodeRDataCERT(rdata)
+		if err != nil {
+			t.Errorf("DecodeRDataCERT(%x): %v", rdata, err)
+			continue
+		}
+		if !bytes.Equal(decoded, p) {
+			t.Errorf("CERT round-trip failed for len=%d: got len=%d", len(p), len(decoded))
+		}
+	}
+}
+
+func TestDecodeRDataCERT(t *testing.T) {
+	for _, test := range [][]byte{
+		{},
+		{0x00},
+		{0x00, 0x03, 0x00, 0x00},
+	} {
+		_, err := DecodeRDataCERT(test)
+		if err != io.ErrUnexpectedEOF {
+			t.Errorf("DecodeRDataCERT(%x) = %v, want %v", test, err, io.ErrUnexpectedEOF)
+		}
+	}
+}
+
 func TestRDataNULLIdentity(t *testing.T) {
 	// NULL encode/decode should be identity — no framing overhead.
 	p := []byte{0x01, 0x02, 0x03}
@@ -897,6 +970,99 @@ func TestRDataCAARoundTrip(t *testing.T) {
 		}
 		if !bytes.Equal(decoded, p) {
 			t.Errorf("CAA round-trip failed for len=%d: got len=%d", len(p), len(decoded))
+		}
+	}
+}
+
+func TestEncodeDecodeRDataHTTPS(t *testing.T) {
+	domain, _ := ParseName("t.example.com")
+	for _, p := range [][]byte{
+		{},
+		{0x01},
+		bytes.Repeat([]byte{0xab}, 80),
+	} {
+		rdata, err := EncodeRDataHTTPS(p, domain)
+		if err != nil {
+			t.Errorf("EncodeRDataHTTPS(%x): %v", p, err)
+			continue
+		}
+		decoded, err := DecodeRDataHTTPS(rdata, domain)
+		if err != nil {
+			t.Errorf("DecodeRDataHTTPS: %v", err)
+			continue
+		}
+		if !bytes.Equal(decoded, p) {
+			t.Errorf("HTTPS round-trip failed for %x: got %x", p, decoded)
+		}
+	}
+}
+
+func TestDecodeRDataHTTPS(t *testing.T) {
+	domain, _ := ParseName("t.example.com")
+	_, err := DecodeRDataHTTPS([]byte{0x00}, domain)
+	if err != io.ErrUnexpectedEOF {
+		t.Errorf("DecodeRDataHTTPS short header = %v, want %v", err, io.ErrUnexpectedEOF)
+	}
+}
+
+func TestReadRRHTTPSCompression(t *testing.T) {
+	msg := []byte{
+		0x00, 0x01,
+		0x81, 0x80,
+		0x00, 0x01,
+		0x00, 0x01,
+		0x00, 0x00,
+		0x00, 0x00,
+		0x07, 'e', 'x', 'a', 'm', 'p', 'l', 'e',
+		0x03, 'c', 'o', 'm',
+		0x00,
+		0x00, 0x41,
+		0x00, 0x01,
+		0xc0, 0x0c,
+		0x00, 0x41,
+		0x00, 0x01,
+		0x00, 0x00, 0x0e, 0x10,
+		0x00, 0x08,
+		0x00, 0x01,
+		0x03, 'w', 'w', 'w',
+		0xc0, 0x0c,
+	}
+
+	parsed, err := MessageFromWireFormat(msg)
+	if err != nil {
+		t.Fatalf("MessageFromWireFormat: %v", err)
+	}
+	if len(parsed.Answer) != 1 {
+		t.Fatalf("expected 1 answer, got %d", len(parsed.Answer))
+	}
+	answer := parsed.Answer[0]
+	if answer.Type != RRTypeHTTPS {
+		t.Fatalf("expected HTTPS type, got %d", answer.Type)
+	}
+	expectedName := Name([][]byte{[]byte("www"), []byte("example"), []byte("com")})
+	expectedWire := expectedName.WireFormat()
+	expected := append([]byte{0x00, 0x01}, expectedWire...)
+	if !bytes.Equal(answer.Data, expected) {
+		t.Errorf("HTTPS RDATA: got %x, want %x", answer.Data, expected)
+	}
+}
+
+func TestParseRecordType(t *testing.T) {
+	for _, test := range []struct {
+		s  string
+		rt uint16
+	}{
+		{"hinfo", RRTypeHINFO},
+		{"cert", RRTypeCERT},
+		{"https", RRTypeHTTPS},
+	} {
+		rt, err := ParseRecordType(test.s)
+		if err != nil {
+			t.Errorf("ParseRecordType(%q): %v", test.s, err)
+			continue
+		}
+		if rt != test.rt {
+			t.Errorf("ParseRecordType(%q) = %d, want %d", test.s, rt, test.rt)
 		}
 	}
 }

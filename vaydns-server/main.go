@@ -666,8 +666,12 @@ func encodeResponsePayload(rec *record, data []byte, domain dns.Name) error {
 		}
 	case dns.RRTypeNULL:
 		rec.Resp.Answer[0].Data = dns.EncodeRDataNULL(data)
+	case dns.RRTypeHINFO:
+		rec.Resp.Answer[0].Data = dns.EncodeRDataHINFO(data)
 	case dns.RRTypeCAA:
 		rec.Resp.Answer[0].Data = dns.EncodeRDataCAA(data)
+	case dns.RRTypeCERT:
+		rec.Resp.Answer[0].Data = dns.EncodeRDataCERT(data)
 	case dns.RRTypeCNAME:
 		rdata, err := dns.EncodeRDataCNAME(data, domain)
 		if err != nil {
@@ -690,6 +694,12 @@ func encodeResponsePayload(rec *record, data []byte, domain dns.Name) error {
 		rdata, err := dns.EncodeRDataSRV(data, domain)
 		if err != nil {
 			return fmt.Errorf("EncodeRDataSRV: %w", err)
+		}
+		rec.Resp.Answer[0].Data = rdata
+	case dns.RRTypeHTTPS:
+		rdata, err := dns.EncodeRDataHTTPS(data, domain)
+		if err != nil {
+			return fmt.Errorf("EncodeRDataHTTPS: %w", err)
 		}
 		rec.Resp.Answer[0].Data = rdata
 	default:
@@ -920,10 +930,10 @@ func computeMaxEncodedPayload(limit int, encode func([]byte) []byte) int {
 }
 
 // computeMaxEncodedPayloadNameBased computes the maximum raw payload bytes that
-// can fit in a name-based RDATA (CNAME, NS, MX, SRV). The capacity is the same
+// can fit in a name-based RDATA (CNAME, NS, MX, SRV, HTTPS). The capacity is the same
 // for all name-based types because it is constrained by the 255-byte DNS name
-// limit, not the UDP payload size. The MX/SRV fixed headers (2/6 bytes) add to
-// the total RDATA but do not reduce the name portion.
+// limit, not the UDP payload size. The MX/SRV/HTTPS fixed headers (2/6/2 bytes)
+// add to the total RDATA but do not reduce the name portion.
 func computeMaxEncodedPayloadNameBased(domain dns.Name) int {
 	domainWireLen := 1 // null terminator
 	for _, label := range domain {
@@ -1018,7 +1028,7 @@ func run(domain dns.Name, upstream string, dnsConn net.PacketConn, fallbackAddr 
 	// of a maximum-length name in the query's Question section.
 	var maxEncodedPayload int
 	switch recordType {
-	case dns.RRTypeCNAME, dns.RRTypeNS, dns.RRTypeMX, dns.RRTypeSRV:
+	case dns.RRTypeCNAME, dns.RRTypeNS, dns.RRTypeMX, dns.RRTypeSRV, dns.RRTypeHTTPS:
 		maxEncodedPayload = computeMaxEncodedPayloadNameBased(domain)
 	case dns.RRTypeA:
 		maxEncodedPayload = computeMaxEncodedPayloadMultiRR(maxUDPPayload, 4)
@@ -1026,8 +1036,12 @@ func run(domain dns.Name, upstream string, dnsConn net.PacketConn, fallbackAddr 
 		maxEncodedPayload = computeMaxEncodedPayloadMultiRR(maxUDPPayload, 16)
 	case dns.RRTypeNULL:
 		maxEncodedPayload = computeMaxEncodedPayload(maxUDPPayload, dns.EncodeRDataNULL)
+	case dns.RRTypeHINFO:
+		maxEncodedPayload = computeMaxEncodedPayload(maxUDPPayload, dns.EncodeRDataHINFO)
 	case dns.RRTypeCAA:
 		maxEncodedPayload = computeMaxEncodedPayload(maxUDPPayload, dns.EncodeRDataCAA)
+	case dns.RRTypeCERT:
+		maxEncodedPayload = computeMaxEncodedPayload(maxUDPPayload, dns.EncodeRDataCERT)
 	default:
 		maxEncodedPayload = computeMaxEncodedPayload(maxUDPPayload, dns.EncodeRDataTXT)
 	}
@@ -1139,7 +1153,7 @@ Example:
 	// idle-timeout. Should match the client's -keepalive value.
 	flag.StringVar(&keepAliveStr, "keepalive", defaultKeepAlive.String(), "keepalive ping interval (e.g. 2s, 500ms); must be less than idle-timeout")
 	flag.IntVar(&clientIDSize, "clientid-size", 1, "client ID size in bytes")
-	flag.StringVar(&recordTypeStr, "record-type", "txt", "DNS record type for downstream data (txt, null, cname, a, aaaa, mx, ns, srv, caa)")
+	flag.StringVar(&recordTypeStr, "record-type", "txt", "DNS record type for downstream data (txt, null, hinfo, cname, a, aaaa, mx, ns, srv, cert, https, caa)")
 	flag.IntVar(&queueSize, "queue-size", turbotunnel.QueueSize, "packet queue size for DNS tunnel transport")
 	flag.IntVar(&kcpWindowSize, "kcp-window-size", 0, "KCP send/receive window size in packets (0 = queue-size/2)")
 	flag.StringVar(&queueOverflowStr, "queue-overflow", string(turbotunnel.DefaultQueueOverflowMode), "queue overflow behavior: drop or block")
@@ -1315,7 +1329,7 @@ Example:
 	log.Infof("wire config: clientid-size=%d", wireConfig.ClientIDSize)
 
 	switch recordType {
-	case dns.RRTypeCNAME, dns.RRTypeNS, dns.RRTypeMX, dns.RRTypeSRV:
+	case dns.RRTypeCNAME, dns.RRTypeNS, dns.RRTypeMX, dns.RRTypeSRV, dns.RRTypeHTTPS:
 		explicitFlags := make(map[string]bool)
 		flag.Visit(func(f *flag.Flag) {
 			explicitFlags[f.Name] = true
