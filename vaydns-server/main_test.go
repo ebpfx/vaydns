@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"io"
 	"testing"
+
+	"github.com/net2share/vaydns/dns"
 )
 
 func allServerPackets(buf []byte) ([][]byte, error) {
@@ -71,5 +73,33 @@ func TestDecodeUpstreamQueryPoll(t *testing.T) {
 func TestDecodeUpstreamQueryRejectsMalformedPoll(t *testing.T) {
 	if _, _, err := decodeUpstreamQuery([]byte{0xaa, 0xbb, 0x00, 0x01, 0x02}, 2); err != io.ErrUnexpectedEOF {
 		t.Fatalf("decodeUpstreamQuery error = %v, want %v", err, io.ErrUnexpectedEOF)
+	}
+}
+
+func TestRecordTypeMaxEncodedPayloadHINFO(t *testing.T) {
+	prevRecordType := recordType
+	defer func() { recordType = prevRecordType }()
+	recordType = dns.RRTypeHINFO
+	var maxEncodedPayload int
+	switch recordType {
+	case dns.RRTypeCNAME, dns.RRTypeNS, dns.RRTypeMX, dns.RRTypeSRV, dns.RRTypeHTTPS:
+		maxEncodedPayload = computeMaxEncodedPayloadNameBased(dns.Name([][]byte{}))
+	case dns.RRTypeA:
+		maxEncodedPayload = computeMaxEncodedPayloadMultiRR(maxUDPPayload, 4)
+	case dns.RRTypeAAAA:
+		maxEncodedPayload = computeMaxEncodedPayloadMultiRR(maxUDPPayload, 16)
+	case dns.RRTypeNULL:
+		maxEncodedPayload = computeMaxEncodedPayload(maxUDPPayload, dns.EncodeRDataNULL)
+	case dns.RRTypeHINFO:
+		maxEncodedPayload = 510
+	case dns.RRTypeCAA:
+		maxEncodedPayload = computeMaxEncodedPayload(maxUDPPayload, dns.EncodeRDataCAA)
+	case dns.RRTypeCERT:
+		maxEncodedPayload = computeMaxEncodedPayload(maxUDPPayload, dns.EncodeRDataCERT)
+	default:
+		maxEncodedPayload = computeMaxEncodedPayload(maxUDPPayload, dns.EncodeRDataTXT)
+	}
+	if got, want := maxEncodedPayload, 510; got != want {
+		t.Fatalf("maxEncodedPayload for HINFO = %d, want %d", got, want)
 	}
 }

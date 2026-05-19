@@ -1037,7 +1037,7 @@ func run(domain dns.Name, upstream string, dnsConn net.PacketConn, fallbackAddr 
 	case dns.RRTypeNULL:
 		maxEncodedPayload = computeMaxEncodedPayload(maxUDPPayload, dns.EncodeRDataNULL)
 	case dns.RRTypeHINFO:
-		maxEncodedPayload = computeMaxEncodedPayload(maxUDPPayload, dns.EncodeRDataHINFO)
+		maxEncodedPayload = 510
 	case dns.RRTypeCAA:
 		maxEncodedPayload = computeMaxEncodedPayload(maxUDPPayload, dns.EncodeRDataCAA)
 	case dns.RRTypeCERT:
