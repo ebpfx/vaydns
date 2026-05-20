@@ -291,9 +291,9 @@ An observer watching traffic leaving the tunnel server can see any unprotected d
 
 ### Payload sizes
 
-Upstream (client → server) payload depends on the domain name length. Shorter domains = more space.
+Upstream (client -> server) payload depends on the domain name length. Shorter domains = more space.
 
-Downstream (server → client) payload depends on the UDP response size. The `-mtu` flag on the server controls the max UDP payload:
+Downstream (server -> client) payload depends on the UDP response size. The `-mtu` flag on the server controls the max UDP payload:
 
 ```sh
 ./vaydns-server -mtu 512 -udp :5300 -domain t.example.com -upstream 127.0.0.1:8000

@@ -450,7 +450,7 @@ func (t *Tunnel) Handle(lconn *net.TCPConn) error {
 		defer wg.Done()
 		_, err := io.Copy(stream, lconn)
 		if shouldLogCopyError(err) {
-			log.Warnf("local → tunnel copy error: %v", err)
+			log.Warnf("local -> tunnel copy error: %v", err)
 		}
 		lconn.CloseRead()
 		stream.Close()
@@ -459,7 +459,7 @@ func (t *Tunnel) Handle(lconn *net.TCPConn) error {
 		defer wg.Done()
 		_, err := io.Copy(lconn, stream)
 		if shouldLogCopyError(err) {
-			log.Warnf("tunnel → local copy error: %v", err)
+			log.Warnf("tunnel -> local copy error: %v", err)
 		}
 		lconn.CloseWrite()
 		lconn.CloseRead()
@@ -732,7 +732,7 @@ func (t *Tunnel) handleConn(local *net.TCPConn, sess *smux.Session, conv uint32,
 		defer wg.Done()
 		_, err := io.Copy(stream, local)
 		if shouldLogCopyError(err) {
-			log.Warnf("[%08x:%d] local → tunnel copy error: %v", conv, stream.ID(), err)
+			log.Warnf("[%08x:%d] local -> tunnel copy error: %v", conv, stream.ID(), err)
 		}
 		local.CloseRead()
 		stream.Close()
@@ -741,7 +741,7 @@ func (t *Tunnel) handleConn(local *net.TCPConn, sess *smux.Session, conv uint32,
 		defer wg.Done()
 		_, err := io.Copy(local, stream)
 		if shouldLogCopyError(err) {
-			log.Warnf("[%08x:%d] tunnel → local copy error: %v", conv, stream.ID(), err)
+			log.Warnf("[%08x:%d] tunnel -> local copy error: %v", conv, stream.ID(), err)
 		}
 		local.CloseWrite()
 		local.CloseRead()

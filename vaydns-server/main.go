@@ -170,7 +170,7 @@ func handleStream(stream *smux.Stream, upstream string, conv uint32, idleTimeout
 			err = nil
 		}
 		if err != nil && !errors.Is(err, io.ErrClosedPipe) {
-			log.Warnf("[%08x:%d] upstream → client copy error: %v", conv, stream.ID(), err)
+			log.Warnf("[%08x:%d] upstream -> client copy error: %v", conv, stream.ID(), err)
 		}
 		upstreamTCPConn.CloseRead()
 		stream.Close()
@@ -183,7 +183,7 @@ func handleStream(stream *smux.Stream, upstream string, conv uint32, idleTimeout
 			err = nil
 		}
 		if err != nil && !errors.Is(err, io.ErrClosedPipe) {
-			log.Warnf("[%08x:%d] client → upstream copy error: %v", conv, stream.ID(), err)
+			log.Warnf("[%08x:%d] client -> upstream copy error: %v", conv, stream.ID(), err)
 		}
 		upstreamTCPConn.CloseWrite()
 	}()
@@ -878,7 +878,7 @@ func computeMaxEncodedPayloadMultiRR(limit int, chunkSize int) int {
 	high := 32768
 	for low+1 < high {
 		mid := (low + high) / 2
-		// Simulate encoding: 2-byte length prefix + payload → ceil((2+mid)/chunkSize) RRs.
+		// Simulate encoding: 2-byte length prefix + payload -> ceil((2+mid)/chunkSize) RRs.
 		totalBytes := 2 + mid
 		numChunks := (totalBytes + chunkSize - 1) / chunkSize
 		resp.Answer = make([]dns.RR, numChunks)
