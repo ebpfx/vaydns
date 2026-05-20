@@ -566,7 +566,7 @@ func encodeResponsePayload(rec *record, data []byte, domain dns.Name) error {
 // response, it sends on the network immediately. Those that represent a
 // response capable of carrying data, it packs full of as many packets as will
 // fit while keeping the total size under maxEncodedPayload, then sends it.
-func sendLoop(dnsConn net.PacketConn, ttConn *turbotunnel.QueuePacketConn, ch <-chan *record, maxEncodedPayload int, responseDelay time.Duration, domain dns.Name) error {
+func sendLoop(dnsConn net.PacketConn, ttConn *turbotunnel.QueuePacketConn, ch <-chan *record, maxEncodedPayload int, responseDelay time.Duration, domain dns.Name, writeMu *sync.Mutex) error {
 	var nextRec *record
 	for {
 		rec := nextRec
@@ -679,7 +679,11 @@ func sendLoop(dnsConn net.PacketConn, ttConn *turbotunnel.QueuePacketConn, ch <-
 		}
 
 		// Now we actually send the message as a UDP packet.
+		// Serialize writes across workers to avoid concurrent WriteTo
+		// corruption on the shared UDP socket.
+		writeMu.Lock()
 		_, err = dnsConn.WriteTo(buf, rec.Addr)
+		writeMu.Unlock()
 		if err != nil {
 			if errors.Is(err, net.ErrClosed) {
 				return err
@@ -936,6 +940,8 @@ func run(domain dns.Name, upstream string, dnsConn net.PacketConn, idleTimeout t
 	ch := make(chan *record, responseQueueSize)
 	defer close(ch)
 
+	var writeMu sync.Mutex
+
 	stats := &ServerStats{}
 	go func() {
 		ticker := time.NewTicker(5 * time.Second)
@@ -947,7 +953,7 @@ func run(domain dns.Name, upstream string, dnsConn net.PacketConn, idleTimeout t
 
 	for i := 0; i < responseWorkers; i++ {
 		go func() {
-			err := sendLoop(dnsConn, ttConn, ch, maxEncodedPayload, responseDelay, domain)
+			err := sendLoop(dnsConn, ttConn, ch, maxEncodedPayload, responseDelay, domain, &writeMu)
 			if err != nil {
 				log.Warnf("response sender exited: %v", err)
 			}
