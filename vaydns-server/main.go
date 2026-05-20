@@ -62,6 +62,9 @@ const (
 	// How long to wait for a TCP connection to upstream to be established.
 	upstreamDialTimeout = 30 * time.Second
 
+	// Limit how many streams can be dialing upstream at once.
+	upstreamDialConcurrency = 64
+
 	// pollMarker is a reserved upstream length byte that marks an empty poll.
 	// Data packets always have a positive length.
 	pollMarker = 0
@@ -116,13 +119,34 @@ func (s *ServerStats) log() {
 	log.Debugf("queries: %d total, %d answered, %d dropped (response queue full)", total, success, responseDropped)
 }
 
+type idleDeadlineConn struct {
+	net.Conn
+	idleTimeout time.Duration
+}
+
+func (c *idleDeadlineConn) Read(p []byte) (int, error) {
+	if c.idleTimeout > 0 {
+		c.Conn.SetReadDeadline(time.Now().Add(c.idleTimeout))
+	}
+	return c.Conn.Read(p)
+}
+
+func (c *idleDeadlineConn) Write(p []byte) (int, error) {
+	if c.idleTimeout > 0 {
+		c.Conn.SetWriteDeadline(time.Now().Add(c.idleTimeout))
+	}
+	return c.Conn.Write(p)
+}
+
 // handleStream bidirectionally connects a client stream with a TCP socket
 // addressed by upstream.
-func handleStream(stream *smux.Stream, upstream string, conv uint32) error {
+func handleStream(stream *smux.Stream, upstream string, conv uint32, idleTimeout time.Duration, upstreamDialSem chan struct{}) error {
+	upstreamDialSem <- struct{}{}
 	dialer := net.Dialer{
 		Timeout: upstreamDialTimeout,
 	}
 	upstreamConn, err := dialer.Dial("tcp", upstream)
+	<-upstreamDialSem
 	if err != nil {
 		return fmt.Errorf("stream %08x:%d connect upstream: %v", conv, stream.ID(), err)
 	}
@@ -132,11 +156,15 @@ func handleStream(stream *smux.Stream, upstream string, conv uint32) error {
 		log.Debugf("[%08x:%d] failed to set TCP_NODELAY on upstream connection: %v", conv, stream.ID(), err)
 	}
 
+	streamConn := &idleDeadlineConn{
+		Conn:        stream,
+		idleTimeout: idleTimeout,
+	}
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		_, err := io.Copy(stream, upstreamTCPConn)
+		_, err := io.Copy(streamConn, upstreamTCPConn)
 		if err == io.EOF {
 			// smux Stream.Write may return io.EOF.
 			err = nil
@@ -149,7 +177,7 @@ func handleStream(stream *smux.Stream, upstream string, conv uint32) error {
 	}()
 	go func() {
 		defer wg.Done()
-		_, err := io.Copy(upstreamTCPConn, stream)
+		_, err := io.Copy(upstreamTCPConn, streamConn)
 		if err == io.EOF {
 			// smux Stream.WriteTo may return io.EOF.
 			err = nil
@@ -166,7 +194,7 @@ func handleStream(stream *smux.Stream, upstream string, conv uint32) error {
 
 // acceptStreams wraps a KCP session in an smux.Session, then awaits smux
 // streams. It passes each stream to handleStream.
-func acceptStreams(conn *kcp.UDPSession, upstream string, idleTimeout time.Duration, keepAlive time.Duration) error {
+func acceptStreams(conn *kcp.UDPSession, upstream string, idleTimeout time.Duration, keepAlive time.Duration, upstreamDialSem chan struct{}) error {
 	smuxConfig := smux.DefaultConfig()
 	smuxConfig.KeepAliveInterval = keepAlive
 	smuxConfig.KeepAliveTimeout = idleTimeout
@@ -191,7 +219,7 @@ func acceptStreams(conn *kcp.UDPSession, upstream string, idleTimeout time.Durat
 				log.Debugf("[%08x:%d] stream closed", conn.GetConv(), stream.ID())
 				stream.Close()
 			}()
-			err := handleStream(stream, upstream, conn.GetConv())
+			err := handleStream(stream, upstream, conn.GetConv(), idleTimeout, upstreamDialSem)
 			if err != nil {
 				log.Warnf("[%08x:%d] stream error: %v", conn.GetConv(), stream.ID(), err)
 			}
@@ -201,7 +229,7 @@ func acceptStreams(conn *kcp.UDPSession, upstream string, idleTimeout time.Durat
 
 // acceptSessions listens for incoming KCP connections and passes them to
 // acceptStreams.
-func acceptSessions(ln *kcp.Listener, mtu int, upstream string, idleTimeout time.Duration, keepAlive time.Duration, kcpWindowSize int) error {
+func acceptSessions(ln *kcp.Listener, mtu int, upstream string, idleTimeout time.Duration, keepAlive time.Duration, kcpWindowSize int, upstreamDialSem chan struct{}) error {
 	for {
 		conn, err := ln.AcceptKCP()
 		if err != nil {
@@ -225,14 +253,16 @@ func acceptSessions(ln *kcp.Listener, mtu int, upstream string, idleTimeout time
 		)
 		conn.SetWindowSize(kcpWindowSize, kcpWindowSize)
 		if rc := conn.SetMtu(mtu); !rc {
-			panic(rc)
+			log.Warnf("[%08x] failed to set MTU %d, dropping session", conn.GetConv(), mtu)
+			conn.Close()
+			continue
 		}
 		go func() {
 			defer func() {
 				log.Debugf("[%08x] session closed", conn.GetConv())
 				conn.Close()
 			}()
-			err := acceptStreams(conn, upstream, idleTimeout, keepAlive)
+			err := acceptStreams(conn, upstream, idleTimeout, keepAlive, upstreamDialSem)
 			if err != nil && !errors.Is(err, io.ErrClosedPipe) {
 				log.Warnf("[%08x] session lost: %v", conn.GetConv(), err)
 			}
@@ -920,10 +950,11 @@ func run(domain dns.Name, upstream string, dnsConn net.PacketConn, idleTimeout t
 		return fmt.Errorf("opening KCP listener: %v", err)
 	}
 	defer ln.Close()
+	upstreamDialSem := make(chan struct{}, upstreamDialConcurrency)
 	go func() {
-		err := acceptSessions(ln, mtu, upstream, idleTimeout, keepAlive, kcpWindowSize)
-		if err != nil {
-			log.Warnf("KCP listener stopped accepting sessions: %v", err)
+		err := acceptSessions(ln, mtu, upstream, idleTimeout, keepAlive, kcpWindowSize, upstreamDialSem)
+		if err != nil && !errors.Is(err, net.ErrClosed) {
+			log.Fatalf("KCP listener stopped accepting sessions: %v", err)
 		}
 	}()
 
@@ -938,7 +969,9 @@ func run(domain dns.Name, upstream string, dnsConn net.PacketConn, idleTimeout t
 	}
 
 	ch := make(chan *record, responseQueueSize)
+	shutdown := make(chan struct{})
 	defer close(ch)
+	defer close(shutdown)
 
 	var writeMu sync.Mutex
 
@@ -946,16 +979,37 @@ func run(domain dns.Name, upstream string, dnsConn net.PacketConn, idleTimeout t
 	go func() {
 		ticker := time.NewTicker(5 * time.Second)
 		defer ticker.Stop()
-		for range ticker.C {
-			stats.log()
+		for {
+			select {
+			case <-ticker.C:
+				stats.log()
+			case <-shutdown:
+				return
+			}
 		}
 	}()
 
 	for i := 0; i < responseWorkers; i++ {
 		go func() {
-			err := sendLoop(dnsConn, ttConn, ch, maxEncodedPayload, responseDelay, domain, &writeMu)
-			if err != nil {
+			for {
+				err := sendLoop(dnsConn, ttConn, ch, maxEncodedPayload, responseDelay, domain, &writeMu)
+				if err == nil {
+					return
+				}
+				if errors.Is(err, net.ErrClosed) {
+					select {
+					case <-shutdown:
+						return
+					case <-time.After(time.Second):
+					}
+					continue
+				}
 				log.Warnf("response sender exited: %v", err)
+				select {
+				case <-shutdown:
+					return
+				case <-time.After(time.Second):
+				}
 			}
 		}()
 	}
