@@ -84,7 +84,7 @@ type TunnelServer struct {
 	// ClientIDSize is the ClientID size in bytes (default: 2).
 	ClientIDSize int
 
-	// MaxQnameLen is the maximum QNAME wire length (default: 101).
+	// MaxQnameLen is the maximum QNAME wire length (default: 63).
 	MaxQnameLen int
 
 	// MaxNumLabels is the maximum number of data labels (default: 0 = unlimited).
@@ -133,7 +133,7 @@ func (ts *TunnelServer) effectiveMaxQnameLen() int {
 	if ts.MaxQnameLen > 0 {
 		return ts.MaxQnameLen
 	}
-	return 99
+	return 63
 }
 
 // Tunnel represents a DNS tunnel connection. Create with NewTunnel, then

@@ -69,7 +69,7 @@ r.UDPAcceptErrors = true                        // accept non-NOERROR responses 
 
 // Tunnel server options
 ts.ClientIDSize = 1      // smaller ClientID
-ts.MaxQnameLen = 99      // QNAME length constraint
+ts.MaxQnameLen = 63      // QNAME length constraint
 ts.MaxNumLabels = 1      // label count constraint
 ts.RPS = 200             // rate limit queries/second
 ts.RecordType = "cname"  // DNS record type for downstream data: txt, null, hinfo, cname, a, aaaa, mx, ns, srv, cert, https, caa (default: "txt")

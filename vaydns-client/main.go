@@ -75,7 +75,7 @@ Examples:
 	flag.StringVar(&udpAddr, "udp", "", "address of UDP DNS resolver")
 	flag.StringVar(&domainArg, "domain", "", "tunnel domain (e.g., t.example.com)")
 	flag.StringVar(&listenAddr, "listen", "127.0.0.1:10888", "TCP address to listen on for local connections (default 127.0.0.1:10888)")
-	flag.IntVar(&maxQnameLen, "max-qname-len", 99, "maximum total QNAME length in wire format (0 = 253 per RFC 1035)")
+	flag.IntVar(&maxQnameLen, "max-qname-len", 63, "maximum total QNAME length in wire format (0 = 253 per RFC 1035)")
 	flag.IntVar(&maxNumLabels, "max-num-labels", 1, "maximum number of data labels in query name (0 = unlimited)")
 	flag.Float64Var(&rpsLimit, "rps", 0, "limit outgoing DNS queries per second (0 = unlimited)")
 	flag.StringVar(&idleTimeoutStr, "idle-timeout", client.DefaultIdleTimeout.String(), "session idle timeout (e.g. 10s, 1m); reconnects if no data received within this period")
@@ -131,7 +131,6 @@ Examples:
 		os.Exit(1)
 	}
 	recordTypeStr = strings.ToLower(recordTypeStr)
-	log.Infof("downstream record type: %s", recordTypeStr)
 
 	if udpAddr == "" {
 		fmt.Fprintf(os.Stderr, "the -udp option is required\n")

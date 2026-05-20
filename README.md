@@ -181,7 +181,7 @@ Some resolvers reject queries with long QNAMEs or too many labels.
 
 | Flag                | Description                                                                 | Default |
 | ------------------- | --------------------------------------------------------------------------- | ------- |
-| `-max-qname-len N`  | Max total QNAME length in wire format (0 = RFC 1035 max of 253)             | `99`    |
+| `-max-qname-len N`  | Max total QNAME length in wire format (0 = RFC 1035 max of 253)             | `63`    |
 | `-max-num-labels N` | Max data labels before the tunnel domain (0 = unlimited, 1 = most DNS-like) | `1`     |
 
 These reduce upstream throughput but improve compatibility. The minimum effective MTU is 25 bytes — below that the client exits with an error.
@@ -192,7 +192,7 @@ These reduce upstream throughput but improve compatibility. The minimum effectiv
 > maxQnameLen >= dataLabelWireBytes + domainWireLen
 > ```
 >
-> Where `domainWireLen` is the wire-format length of the tunnel domain (`1 + len` per label — e.g. `t.example.com` = 14 bytes), and the client subtracts upstream framing overhead from the raw base32 capacity to derive the KCP MTU (`clientid-size + 1` bytes, so 2 bytes by default). With a domain like `t.example.com`, the default `max-qname-len=99` still yields usable MTU headroom. The client exits if the resulting MTU falls below 25 bytes.
+> Where `domainWireLen` is the wire-format length of the tunnel domain (`1 + len` per label — e.g. `t.example.com` = 14 bytes), and the client subtracts upstream framing overhead from the raw base32 capacity to derive the KCP MTU (`clientid-size + 1` bytes, so 2 bytes by default). With a domain like `t.example.com`, the default `max-qname-len=63` still yields usable MTU headroom. The client exits if the resulting MTU falls below 25 bytes.
 
 #### Other
 
