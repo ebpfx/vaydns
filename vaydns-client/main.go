@@ -39,7 +39,6 @@ func main() {
 	var pollMaxDelayStr string
 	var udpTransportStaleTimeoutStr string
 	var openStreamFailureLimit int
-	var maxStreams int
 	var udpWorkers int
 	var udpPerQuerySockets bool
 	var udpTimeoutStr string
@@ -89,7 +88,6 @@ Examples:
 	flag.StringVar(&pollMaxDelayStr, "poll-max-delay", client.DefaultPollMaxDelay.String(), "maximum idle backoff between empty DNS polls (e.g. 2s, 5s)")
 	flag.StringVar(&udpTransportStaleTimeoutStr, "udp-transport-stale-timeout", client.DefaultUDPTransportStaleTimeout.String(), "retire the current session if per-query UDP sees no valid response for this long while streams need transport")
 	flag.IntVar(&openStreamFailureLimit, "open-stream-failure-limit", client.DefaultOpenStreamFailureLimit, "retire an idle session after this many consecutive stream-open failures")
-	flag.IntVar(&maxStreams, "max-streams", client.DefaultMaxStreams, "max concurrent streams per session (0 = unlimited)")
 	flag.IntVar(&udpWorkers, "udp-workers", client.DefaultUDPWorkers, "number of concurrent UDP worker goroutines (used with -udp-per-query-sockets)")
 	flag.BoolVar(&udpPerQuerySockets, "udp-per-query-sockets", false, "use per-query UDP sockets instead of the default shared socket")
 	flag.StringVar(&udpTimeoutStr, "udp-timeout", client.DefaultUDPResponseTimeout.String(), "per-query UDP response timeout (e.g. 800ms, 1s)")
@@ -302,7 +300,6 @@ Examples:
 	tunnel.IdleTimeout = idleTimeout
 	tunnel.KeepAlive = keepAlive
 	tunnel.OpenStreamTimeout = openStreamTimeout
-	tunnel.MaxStreams = maxStreams
 	tunnel.ReconnectMinDelay = reconnectMinDelay
 	tunnel.ReconnectMaxDelay = reconnectMaxDelay
 	tunnel.PollDelay = pollDelay

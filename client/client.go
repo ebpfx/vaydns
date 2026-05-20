@@ -45,7 +45,6 @@ const (
 	DefaultSessionCheckInterval     = 500 * time.Millisecond
 	DefaultUDPResponseTimeout       = 800 * time.Millisecond
 	DefaultUDPWorkers               = 100
-	DefaultMaxStreams               = 0 // unlimited
 	DefaultPollDelay                = 500 * time.Millisecond
 	DefaultActivePollDelay          = 200 * time.Millisecond
 	DefaultPollMaxDelay             = 2 * time.Second
@@ -148,7 +147,6 @@ type Tunnel struct {
 	IdleTimeout              time.Duration                 // default: 10s
 	KeepAlive                time.Duration                 // default: 2s
 	OpenStreamTimeout        time.Duration                 // default: 10s
-	MaxStreams               int                           // default: 0 (0 = unlimited)
 	ReconnectMinDelay        time.Duration                 // default: 1s
 	ReconnectMaxDelay        time.Duration                 // default: 30s
 	SessionCheckInterval     time.Duration                 // default: 500ms
@@ -192,9 +190,6 @@ func (t *Tunnel) applyDefaults() {
 	}
 	if t.OpenStreamTimeout == 0 {
 		t.OpenStreamTimeout = DefaultOpenStreamTimeout
-	}
-	if t.MaxStreams == 0 {
-		t.MaxStreams = DefaultMaxStreams
 	}
 	if t.ReconnectMinDelay == 0 {
 		t.ReconnectMinDelay = DefaultReconnectDelay
@@ -557,11 +552,6 @@ func (t *Tunnel) ListenAndServe(listenAddr string) error {
 	defer ln.Close()
 	defer t.closeTransportLayers()
 
-	var sem chan struct{}
-	if t.MaxStreams > 0 {
-		sem = make(chan struct{}, t.MaxStreams)
-	}
-
 	for {
 		// Rebuild the transport stack from the resolver upward.
 		var transportErrCh <-chan error
@@ -656,14 +646,10 @@ func (t *Tunnel) ListenAndServe(listenAddr string) error {
 			default:
 			}
 
-			go func(local *net.TCPConn, sess *smux.Session, conv uint32, openFailCount *atomic.Int32) {
-				if sem != nil {
-					sem <- struct{}{}
-					defer func() { <-sem }()
-				}
-				defer local.Close()
-				if age := t.udpTransportStaleAge(true); age > t.UDPTransportStaleTimeout {
-					log.Warnf("session %08x transport stale after %s, closing connection", conv, age.Round(time.Second))
+		go func(local *net.TCPConn, sess *smux.Session, conv uint32, openFailCount *atomic.Int32) {
+			defer local.Close()
+			if age := t.udpTransportStaleAge(true); age > t.UDPTransportStaleTimeout {
+				log.Warnf("session %08x transport stale after %s, closing connection", conv, age.Round(time.Second))
 					return
 				}
 				err := t.handleConn(local, sess, conv, openFailCount)

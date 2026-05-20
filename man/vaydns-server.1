@@ -15,7 +15,6 @@
 .Nm
 .Fl udp Ar ADDR : Ns Ar PORT
 .Op Fl mtu Ar MTU
-.Op Fl fallback Ar ADDR : Ns Ar PORT
 .Fl domain Ar DOMAIN
 .Fl upstream Ar UPSTREAMADDR : Ns Ar UPSTREAMPORT
 
@@ -107,12 +106,6 @@ Number of DNS response sender workers.
 Default:
 .Cm 2 .
 
-.It Fl fallback Ar ADDR
-UDP endpoint to forward non-DNS packets to.
-If an incoming packet is not a valid DNS message,
-it will be forwarded to this address.
-This allows another service to share the same UDP port.
-
 .It Fl clientid-size Ar N
 Set the ClientID size in bytes.
 Default:
@@ -178,14 +171,6 @@ and forward the streams as TCP connections to
 vaydns-server -udp 0.0.0.0:5300 -domain t.example.com \e
   -upstream 127.0.0.1:8000
 .Ed
-
-Forward non-DNS traffic to a fallback service:
-
-.Bd -literal -offset indent
-vaydns-server -udp 0.0.0.0:5300 -fallback 127.0.0.1:8888 \e
-  -domain t.example.com -upstream 127.0.0.1:8000
-.Ed
-
 
 .Sh DIAGNOSTICS
 

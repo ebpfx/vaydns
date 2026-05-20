@@ -78,7 +78,6 @@ ts.RecordType = "cname"  // DNS record type for downstream data: txt, null, hinf
 t.IdleTimeout = 60 * time.Second
 t.KeepAlive = 10 * time.Second
 t.OpenStreamTimeout = 10 * time.Second
-t.MaxStreams = 256
 t.SessionCheckInterval = 500 * time.Millisecond
 t.ReconnectMinDelay = 1 * time.Second
 t.ReconnectMaxDelay = 30 * time.Second

@@ -105,7 +105,6 @@ sudo ip6tables -t nat -I PREROUTING -i eth0 -p udp --dport 53 -j REDIRECT --to-p
 | `-mtu N`             | Max UDP payload size for responses                                | `1232`     |
 | `-idle-timeout D`    | Session idle timeout (must match client)                          | `10s`      |
 | `-keepalive D`       | Keepalive ping interval (must match client, must be < idle-timeout) | `2s`      |
-| `-fallback ADDR`     | UDP endpoint to forward non-DNS packets to (e.g. `127.0.0.1:8888`) | —          |
 | `-clientid-size N`   | ClientID size in bytes                                              | `1`        |
 | `-record-type TYPE`  | DNS record type for downstream data: `txt`, `null`, `hinfo`, `cname`, `a`, `aaaa`, `mx`, `ns`, `srv`, `cert`, `https`, `caa`. Must match the client. | `txt`      |
 | `-queue-size N`      | Packet queue size for transport and DNS layers                    | `512`      |
@@ -139,7 +138,6 @@ sudo ip6tables -t nat -I PREROUTING -i eth0 -p udp --dport 53 -j REDIRECT --to-p
 | --------------------------- | -------------------------------------------------- | ------- |
 | `-idle-timeout D`           | Session idle timeout (must match server)                                                    | `10s`   |
 | `-keepalive D`              | Keepalive ping interval (must match server, must be < idle-timeout)                         | `2s`   |
-| `-max-streams N`            | Max concurrent streams per session (0 = unlimited)                                          | `0`   |
 | `-open-stream-timeout D`    | Timeout for opening an smux stream                                                          | `10s`   |
 | `-open-stream-failure-limit N` | Retire an idle session after this many consecutive stream-open failures                  | `3`    |
 | `-reconnect-min D`          | Initial backoff delay for session reconnect                                                  | `1s`    |
