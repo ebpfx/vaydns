@@ -125,14 +125,13 @@ Examples:
 		fmt.Fprintf(os.Stderr, "the -domain option is required\n")
 		os.Exit(1)
 	}
-	log.Infof("using domain: %s", domainArg)
 
 	if _, err := dns.ParseRecordType(recordTypeStr); err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		os.Exit(1)
 	}
 	recordTypeStr = strings.ToLower(recordTypeStr)
-	log.Infof("record type: %s", recordTypeStr)
+	log.Infof("downstream record type: %s", recordTypeStr)
 
 	if udpAddr == "" {
 		fmt.Fprintf(os.Stderr, "the -udp option is required\n")
@@ -274,9 +273,9 @@ Examples:
 	resolver.UDPAcceptErrors = udpAcceptErrors
 	if udpAcceptErrors {
 		if !udpPerQuerySockets {
-			log.Warnf("-udp-accept-errors has no effect unless -udp-per-query-sockets is set")
+			log.Warnf("-udp-accept-errors only applies when -udp-per-query-sockets is enabled; flag has no effect in shared socket mode")
 		} else {
-			log.Warnf("-udp-accept-errors disables forged response filtering; per-query sockets will accept the first response regardless of RCODE, which may cause connection failures under DNS injection")
+			log.Warnf("forged response filtering is disabled; the first DNS response will be accepted regardless of RCODE - connections may fail under active DNS injection")
 		}
 	}
 	// Build tunnel server config.
@@ -310,22 +309,9 @@ Examples:
 	tunnel.PacketQueueSize = queueSize
 	tunnel.KCPWindowSize = kcpWindowSize
 	tunnel.QueueOverflowMode = queueOverflowMode
-	log.Infof(
-		"transport config: queue-size=%d kcp-window-size=%d queue-overflow=%s poll-delay=%s active-poll-delay=%s poll-max-delay=%s udp-transport-stale-timeout=%s open-stream-failure-limit=%d",
-		queueSize,
-		kcpWindowSize,
-		queueOverflowMode,
-		pollDelay,
-		activePollDelay,
-		pollMaxDelay,
-		udpTransportStaleTimeout,
-		openStreamFailureLimit,
-	)
-
-	log.Infof("wire config: clientid-size=%d", clientIDSize)
 
 	if rpsLimit > 0 {
-		log.Infof("rate limiting DNS queries to %.1f requests per second", rpsLimit)
+		log.Infof("DNS query rate limited to %.1f queries/sec", rpsLimit)
 	}
 
 	err = tunnel.ListenAndServe(listenAddr)

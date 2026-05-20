@@ -113,7 +113,7 @@ func (s *ServerStats) log() {
 	total := atomic.LoadUint64(&s.total)
 	success := atomic.LoadUint64(&s.success)
 	responseDropped := atomic.LoadUint64(&s.responseDropped)
-	log.Debugf("stats | total: %d | success: %d | response_dropped: %d", total, success, responseDropped)
+	log.Debugf("queries: %d total, %d answered, %d dropped (response queue full)", total, success, responseDropped)
 }
 
 // handleStream bidirectionally connects a client stream with a TCP socket
@@ -129,7 +129,7 @@ func handleStream(stream *smux.Stream, upstream string, conv uint32) error {
 	defer upstreamConn.Close()
 	upstreamTCPConn := upstreamConn.(*net.TCPConn)
 	if err := upstreamTCPConn.SetNoDelay(true); err != nil {
-		log.Debugf("stream %08x:%d upstream TCP_NODELAY: %v", conv, stream.ID(), err)
+		log.Debugf("[%08x:%d] failed to set TCP_NODELAY on upstream connection: %v", conv, stream.ID(), err)
 	}
 
 	var wg sync.WaitGroup
@@ -142,7 +142,7 @@ func handleStream(stream *smux.Stream, upstream string, conv uint32) error {
 			err = nil
 		}
 		if err != nil && !errors.Is(err, io.ErrClosedPipe) {
-			log.Warnf("stream %08x:%d copy stream←upstream: %v", conv, stream.ID(), err)
+			log.Warnf("[%08x:%d] upstream → client copy error: %v", conv, stream.ID(), err)
 		}
 		upstreamTCPConn.CloseRead()
 		stream.Close()
@@ -155,7 +155,7 @@ func handleStream(stream *smux.Stream, upstream string, conv uint32) error {
 			err = nil
 		}
 		if err != nil && !errors.Is(err, io.ErrClosedPipe) {
-			log.Warnf("stream %08x:%d copy upstream←stream: %v", conv, stream.ID(), err)
+			log.Warnf("[%08x:%d] client → upstream copy error: %v", conv, stream.ID(), err)
 		}
 		upstreamTCPConn.CloseWrite()
 	}()
@@ -185,15 +185,15 @@ func acceptStreams(conn *kcp.UDPSession, upstream string, idleTimeout time.Durat
 			}
 			return err
 		}
-		log.Infof("stream %08x:%d ready", conn.GetConv(), stream.ID())
+		log.Infof("[%08x:%d] stream opened", conn.GetConv(), stream.ID())
 		go func() {
 			defer func() {
-				log.Debugf("stream %08x:%d closed", conn.GetConv(), stream.ID())
+				log.Debugf("[%08x:%d] stream closed", conn.GetConv(), stream.ID())
 				stream.Close()
 			}()
 			err := handleStream(stream, upstream, conn.GetConv())
 			if err != nil {
-				log.Warnf("stream %08x:%d handleStream: %v", conn.GetConv(), stream.ID(), err)
+				log.Warnf("[%08x:%d] stream error: %v", conn.GetConv(), stream.ID(), err)
 			}
 		}()
 	}
@@ -210,7 +210,7 @@ func acceptSessions(ln *kcp.Listener, mtu int, upstream string, idleTimeout time
 			}
 			return err
 		}
-		log.Infof("session %08x ready", conn.GetConv())
+		log.Infof("[%08x] new client session established", conn.GetConv())
 		// Permit coalescing the payloads of consecutive sends.
 		conn.SetStreamMode(true)
 		// Keep the congestion window disabled, but otherwise stay on KCP's
@@ -229,12 +229,12 @@ func acceptSessions(ln *kcp.Listener, mtu int, upstream string, idleTimeout time
 		}
 		go func() {
 			defer func() {
-				log.Debugf("session %08x closed", conn.GetConv())
+				log.Debugf("[%08x] session closed", conn.GetConv())
 				conn.Close()
 			}()
 			err := acceptStreams(conn, upstream, idleTimeout, keepAlive)
 			if err != nil && !errors.Is(err, io.ErrClosedPipe) {
-				log.Warnf("session %08x accept streams: %v", conn.GetConv(), err)
+				log.Warnf("[%08x] session lost: %v", conn.GetConv(), err)
 			}
 		}()
 	}
@@ -296,7 +296,7 @@ func decodeUpstreamQuery(payload []byte, clientIDSize int) (turbotunnel.ClientID
 // the returned dns.Message is nil, it means that there should be no response to
 // this query. If the returned dns.Message has an Rcode() of dns.RcodeNoError,
 // the message is a candidate for for carrying downstream data in a TXT record.
-func responseFor(query *dns.Message, domain dns.Name) (*dns.Message, []byte) {
+func responseFor(query *dns.Message, domain dns.Name, addr net.Addr) (*dns.Message, []byte) {
 	responsePayloadSize := uint16(maxUDPPayload)
 	if int(responsePayloadSize) != maxUDPPayload {
 		responsePayloadSize = 0xffff
@@ -330,7 +330,7 @@ func responseFor(query *dns.Message, domain dns.Name) (*dns.Message, []byte) {
 			// "If a query message with more than one OPT RR is
 			// received, a FORMERR (RCODE=1) MUST be returned."
 			resp.Flags |= dns.RcodeFormatError
-			log.Debugf("FORMERR: more than one OPT RR")
+			log.Debugf("rejected query from %s: more than one OPT RR", addr)
 			return resp, nil
 		}
 		resp.Additional = append(resp.Additional, dns.RR{
@@ -350,7 +350,7 @@ func responseFor(query *dns.Message, domain dns.Name) (*dns.Message, []byte) {
 			// RCODE=BADVERS."
 			resp.Flags |= dns.ExtendedRcodeBadVers & 0xf
 			additional.TTL = (dns.ExtendedRcodeBadVers >> 4) << 24
-			log.Debugf("BADVERS: EDNS version %d != 0", version)
+			log.Debugf("rejected query from %s: unsupported EDNS version %d", addr, version)
 			return resp, nil
 		}
 
@@ -367,7 +367,7 @@ func responseFor(query *dns.Message, domain dns.Name) (*dns.Message, []byte) {
 	// There must be exactly one question.
 	if len(query.Question) != 1 {
 		resp.Flags |= dns.RcodeFormatError
-		log.Debugf("FORMERR: too few or too many questions (%d)", len(query.Question))
+		log.Debugf("rejected query from %s: expected 1 question, got %d", addr, len(query.Question))
 		return resp, nil
 	}
 	question := query.Question[0]
@@ -379,7 +379,7 @@ func responseFor(query *dns.Message, domain dns.Name) (*dns.Message, []byte) {
 	if !ok {
 		// Not a name we are authoritative for.
 		resp.Flags |= dns.RcodeNameError
-		log.Debugf("NXDOMAIN: not authoritative for %s", question.Name)
+		log.Debugf("rejected query from %s: not authoritative for %s", addr, question.Name)
 		return resp, nil
 	}
 	resp.Flags |= 0x0400 // AA = 1
@@ -387,7 +387,7 @@ func responseFor(query *dns.Message, domain dns.Name) (*dns.Message, []byte) {
 	if query.Opcode() != 0 {
 		// We don't support OPCODE != QUERY.
 		resp.Flags |= dns.RcodeNotImplemented
-		log.Debugf("NOTIMPL: unrecognized OPCODE %d", query.Opcode())
+		log.Debugf("rejected query from %s: unsupported opcode %d", addr, query.Opcode())
 		return resp, nil
 	}
 
@@ -407,7 +407,7 @@ func responseFor(query *dns.Message, domain dns.Name) (*dns.Message, []byte) {
 	if err != nil {
 		// Base32 error, make like the name doesn't exist.
 		resp.Flags |= dns.RcodeNameError
-		log.Debugf("NXDOMAIN: base32 decoding: %v", err)
+		log.Debugf("rejected query from %s: payload is not valid base32: %v", addr, err)
 		return resp, nil
 	}
 	payload = payload[:n]
@@ -420,7 +420,7 @@ func responseFor(query *dns.Message, domain dns.Name) (*dns.Message, []byte) {
 	// FORMERR MUST be returned."
 	if payloadSize < maxUDPPayload {
 		resp.Flags |= dns.RcodeFormatError
-		log.Debugf("FORMERR: requester payload size %d is too small (minimum %d)", payloadSize, maxUDPPayload)
+		log.Debugf("rejected query from %s: advertised UDP payload size %d is below minimum %d", addr, payloadSize, maxUDPPayload)
 		return resp, nil
 	}
 
@@ -460,7 +460,7 @@ func recvLoop(domain dns.Name, dnsConn net.PacketConn, ttConn *turbotunnel.Queue
 		n, addr, err := dnsConn.ReadFrom(buf[:])
 		if err != nil {
 			if err, ok := err.(net.Error); ok && err.Temporary() {
-				log.Warnf("ReadFrom temporary error: %v", err)
+				log.Warnf("transient read error on DNS socket: %v", err)
 				continue
 			}
 			return err
@@ -471,17 +471,17 @@ func recvLoop(domain dns.Name, dnsConn net.PacketConn, ttConn *turbotunnel.Queue
 		// Got a UDP packet. Try to parse it as a DNS message.
 		query, err := dns.MessageFromWireFormat(buf[:n])
 		if err != nil {
-			log.Debugf("cannot parse DNS query from %s: %v", addr, err)
+			log.Debugf("dropped malformed packet from %s: %v", addr, err)
 			continue
 		}
 
-		resp, payload := responseFor(&query, domain)
+		resp, payload := responseFor(&query, domain, addr)
 		clientID, packet, err := decodeUpstreamQuery(payload, wireConfig.ClientIDSize)
 		if err != nil {
 			// Payload is not long enough to contain a ClientID.
 			if errors.Is(err, io.ErrUnexpectedEOF) && len(payload) < wireConfig.ClientIDSize && resp != nil && resp.Rcode() == dns.RcodeNoError {
 				resp.Flags |= dns.RcodeNameError
-				log.Debugf("NXDOMAIN: %d bytes are too short to contain a ClientID", len(payload))
+				log.Debugf("rejected query from %s: payload too short to contain a client ID (%d bytes)", addr, len(payload))
 			}
 		} else if packet != nil {
 			// Feed the incoming packet to KCP.
@@ -660,20 +660,20 @@ func sendLoop(dnsConn net.PacketConn, ttConn *turbotunnel.QueuePacketConn, ch <-
 			timer.Stop()
 
 			if err := encodeResponsePayload(rec, payload.Bytes(), domain); err != nil {
-				log.Errorf("encode response: %v", err)
+				log.Errorf("failed to encode downstream payload: %v", err)
 				continue
 			}
 		}
 
 		buf, err := rec.Resp.WireFormat()
 		if err != nil {
-			log.Errorf("resp WireFormat: %v", err)
+			log.Errorf("failed to serialize DNS response: %v", err)
 			continue
 		}
 		// Truncate if necessary.
 		// https://tools.ietf.org/html/rfc1035#section-4.1.1
 		if len(buf) > maxUDPPayload {
-			log.Warnf("truncating response of %d bytes to max of %d", len(buf), maxUDPPayload)
+			log.Warnf("response too large (%d bytes), truncating to %d", len(buf), maxUDPPayload)
 			buf = buf[:maxUDPPayload]
 			buf[2] |= 0x02 // TC = 1
 		}
@@ -685,9 +685,9 @@ func sendLoop(dnsConn net.PacketConn, ttConn *turbotunnel.QueuePacketConn, ch <-
 				return err
 			}
 			if err, ok := err.(net.Error); ok && err.Temporary() {
-				log.Warnf("WriteTo temporary error: %v", err)
+				log.Warnf("failed to send DNS response to %s: %v", rec.Addr, err)
 			} else {
-				log.Warnf("WriteTo error: %v", err)
+				log.Warnf("failed to send DNS response to %s: %v", rec.Addr, err)
 			}
 			continue
 		}
@@ -750,7 +750,7 @@ func computeMaxEncodedPayload(limit int, encode func([]byte) []byte) int {
 			},
 		},
 	}
-	resp, _ := responseFor(query, dns.Name([][]byte{}))
+	resp, _ := responseFor(query, dns.Name([][]byte{}), nil)
 	// As in sendLoop.
 	resp.Answer = []dns.RR{
 		{
@@ -837,7 +837,7 @@ func computeMaxEncodedPayloadMultiRR(limit int, chunkSize int) int {
 			},
 		},
 	}
-	resp, _ := responseFor(query, dns.Name([][]byte{}))
+	resp, _ := responseFor(query, dns.Name([][]byte{}), nil)
 
 	// Binary search: find max payload that fits when split into chunkSize RRs.
 	low := 0
@@ -907,7 +907,7 @@ func run(domain dns.Name, upstream string, dnsConn net.PacketConn, idleTimeout t
 		}
 		return fmt.Errorf("maximum UDP payload size of %d leaves only %d bytes for payload", maxUDPPayload, mtu)
 	}
-	log.Infof("effective MTU %d", mtu)
+	log.Infof("effective tunnel MTU: %d bytes", mtu)
 
 	// Start up the virtual PacketConn for turbotunnel.
 	ttConn := turbotunnel.NewQueuePacketConn(turbotunnel.DummyAddr{}, idleTimeout*2, queueSize, queueOverflowMode)
@@ -919,7 +919,7 @@ func run(domain dns.Name, upstream string, dnsConn net.PacketConn, idleTimeout t
 	go func() {
 		err := acceptSessions(ln, mtu, upstream, idleTimeout, keepAlive, kcpWindowSize)
 		if err != nil {
-			log.Warnf("accept sessions: %v", err)
+			log.Warnf("KCP listener stopped accepting sessions: %v", err)
 		}
 	}()
 
@@ -949,7 +949,7 @@ func run(domain dns.Name, upstream string, dnsConn net.PacketConn, idleTimeout t
 		go func() {
 			err := sendLoop(dnsConn, ttConn, ch, maxEncodedPayload, responseDelay, domain)
 			if err != nil {
-				log.Warnf("sendLoop: %v", err)
+				log.Warnf("response sender exited: %v", err)
 			}
 		}()
 	}
@@ -1052,7 +1052,6 @@ Example:
 		fmt.Fprintf(os.Stderr, "invalid domain %+q: %v\n", domainArg, err)
 		os.Exit(1)
 	}
-	log.Infof("serving domain: %s", domain)
 	// We keep upstream as a string in order to eventually pass it
 	// to net.Dial in handleStream. But for the sake of displaying
 	// an error or warning at startup, rather than only when the
@@ -1071,7 +1070,7 @@ Example:
 			// Failure to resolve the host portion is only a
 			// warning. The name will be re-resolved on each
 			// net.Dial in handleStream.
-			log.Warnf("cannot resolve upstream host %+q: %v", upstreamHost, err)
+			log.Warnf("upstream host %q could not be resolved at startup, will retry on first connection: %v", upstreamHost, err)
 		} else if upstreamIPAddr.IP == nil {
 			// Handle the special case of an empty string
 			// for the host portion, which resolves to a nil
@@ -1155,14 +1154,12 @@ Example:
 	if effectiveResponseQueueSize == 0 {
 		effectiveResponseQueueSize = queueSize
 	}
-	log.Infof("transport config: queue-size=%d kcp-window-size=%d queue-overflow=%s response-queue-size=%d response-workers=%d response-delay=%s", queueSize, kcpWindowSize, queueOverflowMode, effectiveResponseQueueSize, responseWorkers, responseDelay)
 
 	if clientIDSize <= 0 {
 		fmt.Fprintf(os.Stderr, "-clientid-size must be positive\n")
 		os.Exit(1)
 	}
 	wireConfig := turbotunnel.WireConfig{ClientIDSize: clientIDSize}
-	log.Infof("wire config: clientid-size=%d", wireConfig.ClientIDSize)
 
 	switch recordType {
 	case dns.RRTypeCNAME, dns.RRTypeNS, dns.RRTypeMX, dns.RRTypeSRV, dns.RRTypeHTTPS:
@@ -1171,7 +1168,7 @@ Example:
 			explicitFlags[f.Name] = true
 		})
 		if explicitFlags["mtu"] {
-			log.Warnf("-mtu has no effect with -record-type %s; capacity is bounded by the DNS name length limit (255 bytes)", recordTypeStr)
+			log.Warnf("-mtu is ignored for record type %s - payload capacity is bounded by the DNS name length limit (255 bytes)", recordTypeStr)
 		}
 	}
 

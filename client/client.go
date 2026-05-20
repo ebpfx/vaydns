@@ -318,13 +318,13 @@ func (t *Tunnel) InitiateKCPConn(mtu int) error {
 			mtu, t.TunnelServer.effectiveMaxQnameLen(), t.TunnelServer.MaxNumLabels, t.wireConfig.ClientIDSize)
 	}
 	t.TunnelServer.MTU = mtu
-	log.Infof("effective MTU %d", mtu)
+	log.Infof("effective tunnel MTU: %d bytes", mtu)
 
 	conn, err := kcp.NewConn2(t.remoteAddr, nil, 0, 0, t.dnsPacketConn)
 	if err != nil {
 		return fmt.Errorf("opening KCP conn: %v", err)
 	}
-	log.Infof("session %08x ready", conn.GetConv())
+	log.Infof("[%08x] tunnel session established", conn.GetConv())
 	conn.SetStreamMode(true)
 	conn.SetNoDelay(0, 0, 0, 1)
 	conn.SetWindowSize(t.effectiveKCPWindowSize(), t.effectiveKCPWindowSize())
@@ -421,19 +421,19 @@ func (t *Tunnel) OpenStream() (net.Conn, error) {
 	stream, err := openStreamWithTimeout(conv, timeout, t.smuxSession.OpenStream)
 	if err != nil {
 		if errors.Is(err, smux.ErrGoAway) && t.smuxSession != nil && !t.smuxSession.IsClosed() {
-			log.Warnf("session %08x stream IDs exhausted; closing smux session for rollover", conv)
+			log.Warnf("[%08x] stream ID space exhausted, cycling session", conv)
 			t.smuxSession.Close()
 		}
 		return nil, err
 	}
-	log.Debugf("stream %08x:%d ready", conv, stream.ID())
+	log.Debugf("[%08x:%d] stream opened", conv, stream.ID())
 	return stream, nil
 }
 
 // Handle forwards data between a local TCP connection and a tunnel stream.
 func (t *Tunnel) Handle(lconn *net.TCPConn) error {
 	if err := lconn.SetNoDelay(true); err != nil {
-		log.Debugf("local TCP_NODELAY: %v", err)
+		log.Debugf("failed to set TCP_NODELAY on local connection: %v", err)
 	}
 	t.activeStreams.Add(1)
 	defer t.activeStreams.Add(-1)
@@ -450,7 +450,7 @@ func (t *Tunnel) Handle(lconn *net.TCPConn) error {
 		defer wg.Done()
 		_, err := io.Copy(stream, lconn)
 		if shouldLogCopyError(err) {
-			log.Warnf("copy stream←local: %v", err)
+			log.Warnf("local → tunnel copy error: %v", err)
 		}
 		lconn.CloseRead()
 		stream.Close()
@@ -459,7 +459,7 @@ func (t *Tunnel) Handle(lconn *net.TCPConn) error {
 		defer wg.Done()
 		_, err := io.Copy(lconn, stream)
 		if shouldLogCopyError(err) {
-			log.Warnf("copy local←stream: %v", err)
+			log.Warnf("tunnel → local copy error: %v", err)
 		}
 		lconn.CloseWrite()
 		lconn.CloseRead()
@@ -476,7 +476,7 @@ func (t *Tunnel) Close() error {
 		t.smuxSession = nil
 	}
 	if t.kcpConn != nil {
-		log.Debugf("session %08x closed", t.kcpConn.GetConv())
+		log.Debugf("[%08x] session closed", t.kcpConn.GetConv())
 		t.kcpConn.Close()
 		t.kcpConn = nil
 	}
@@ -543,7 +543,7 @@ func (t *Tunnel) ListenAndServe(listenAddr string) error {
 		return fmt.Errorf("MTU %d is too small (minimum 25); try increasing -max-qname-len (currently %d), increasing -max-num-labels (currently %d), using a shorter domain, or decreasing -clientid-size (currently %d)",
 			mtu, maxQnameLen, t.TunnelServer.MaxNumLabels, t.wireConfig.ClientIDSize)
 	}
-	log.Infof("effective MTU %d", mtu)
+	log.Infof("effective tunnel MTU: %d bytes", mtu)
 
 	ln, err := net.ListenTCP("tcp", localAddr)
 	if err != nil {
@@ -558,7 +558,7 @@ func (t *Tunnel) ListenAndServe(listenAddr string) error {
 		delay := t.ReconnectMinDelay
 		for {
 			if err := t.resetTransportLayers(); err != nil {
-				log.Warnf("transport rebuild failed: %v; retrying in %v", err, delay)
+				log.Warnf("failed to bring up DNS transport, retrying in %s: %v", delay, err)
 				time.Sleep(delay)
 				delay *= 2
 				if delay > t.ReconnectMaxDelay {
@@ -577,14 +577,14 @@ func (t *Tunnel) ListenAndServe(listenAddr string) error {
 		for {
 			conn, sess, err = t.createSession(mtu)
 			if err == nil {
-				log.Infof("session %08x ready", conn.GetConv())
+				log.Infof("[%08x] tunnel session established", conn.GetConv())
 				break
 			}
-			log.Warnf("session creation failed: %v; rebuilding transport and retrying in %v", err, delay)
+			log.Warnf("session setup failed, rebuilding transport and retrying in %s: %v", delay, err)
 			t.closeTransportLayers()
 			for {
 				if err := t.resetTransportLayers(); err != nil {
-					log.Warnf("transport rebuild failed: %v; retrying in %v", err, delay)
+					log.Warnf("failed to bring up DNS transport, retrying in %s: %v", delay, err)
 					time.Sleep(delay)
 					delay *= 2
 					if delay > t.ReconnectMaxDelay {
@@ -613,7 +613,7 @@ func (t *Tunnel) ListenAndServe(listenAddr string) error {
 			if err != nil {
 				if ne, ok := err.(net.Error); ok && ne.Timeout() {
 					if age := t.udpTransportStaleAge(true); age > t.UDPTransportStaleTimeout {
-						log.Warnf("session %08x transport stale after %s with %d active streams", conv, age.Round(time.Second), t.activeStreams.Load())
+						log.Warnf("[%08x] DNS transport stale for %s with %d active stream(s), retiring session", conv, age.Round(time.Second), t.activeStreams.Load())
 						sessionAlive = false
 						continue
 					}
@@ -621,7 +621,7 @@ func (t *Tunnel) ListenAndServe(listenAddr string) error {
 					case <-sessDone:
 						sessionAlive = false
 					case tErr := <-transportErrCh:
-						log.Warnf("session %08x transport error: %v", conv, tErr)
+						log.Warnf("[%08x] DNS transport error, retiring session: %v", conv, tErr)
 						sessionAlive = false
 					default:
 					}
@@ -639,27 +639,27 @@ func (t *Tunnel) ListenAndServe(listenAddr string) error {
 				sessionAlive = false
 				continue
 			case tErr := <-transportErrCh:
-				log.Warnf("session %08x transport error: %v", conv, tErr)
+				log.Warnf("[%08x] DNS transport error, retiring session: %v", conv, tErr)
 				local.Close()
 				sessionAlive = false
 				continue
 			default:
 			}
 
-		go func(local *net.TCPConn, sess *smux.Session, conv uint32, openFailCount *atomic.Int32) {
-			defer local.Close()
-			if age := t.udpTransportStaleAge(true); age > t.UDPTransportStaleTimeout {
-				log.Warnf("session %08x transport stale after %s, closing connection", conv, age.Round(time.Second))
+			go func(local *net.TCPConn, sess *smux.Session, conv uint32, openFailCount *atomic.Int32) {
+				defer local.Close()
+				if age := t.udpTransportStaleAge(true); age > t.UDPTransportStaleTimeout {
+					log.Warnf("[%08x] DNS transport stale for %s, dropping incoming connection", conv, age.Round(time.Second))
 					return
 				}
 				err := t.handleConn(local, sess, conv, openFailCount)
 				if err != nil {
-					log.Warnf("handle: %v", err)
+					log.Warnf("[%08x] connection failed: %v", conv, err)
 				}
 			}(local.(*net.TCPConn), sess, conv, &openFailCount)
 		}
 
-		log.Warnf("session %08x closed, reconnecting", conv)
+		log.Warnf("[%08x] session closed, reconnecting", conv)
 		sess.Close()
 		conn.Close()
 		t.closeTransportLayers()
@@ -696,7 +696,7 @@ func (t *Tunnel) createSession(mtu int) (*kcp.UDPSession, *smux.Session, error) 
 // handleConn forwards a single TCP connection through the tunnel session.
 func (t *Tunnel) handleConn(local *net.TCPConn, sess *smux.Session, conv uint32, openFailCount *atomic.Int32) error {
 	if err := local.SetNoDelay(true); err != nil {
-		log.Debugf("stream %08x local TCP_NODELAY: %v", conv, err)
+		log.Debugf("[%08x] failed to set TCP_NODELAY on local connection: %v", conv, err)
 	}
 	t.activeStreams.Add(1)
 	defer t.activeStreams.Add(-1)
@@ -704,13 +704,13 @@ func (t *Tunnel) handleConn(local *net.TCPConn, sess *smux.Session, conv uint32,
 	stream, err := openStreamWithTimeout(conv, t.OpenStreamTimeout, sess.OpenStream)
 	if err != nil {
 		if errors.Is(err, smux.ErrGoAway) && !sess.IsClosed() {
-			log.Warnf("session %08x stream IDs exhausted; closing smux session for rollover", conv)
+			log.Warnf("[%08x] stream ID space exhausted, cycling session", conv)
 			sess.Close()
 		}
 		if openFailCount != nil {
 			failures := openFailCount.Add(1)
 			if failures >= int32(t.OpenStreamFailureLimit) && !sess.IsClosed() {
-				log.Warnf("session %08x retiring session after %d consecutive stream-open failures", conv, failures)
+				log.Warnf("[%08x] retiring session after %d consecutive stream open failures", conv, failures)
 				sess.Close()
 			}
 		}
@@ -721,10 +721,10 @@ func (t *Tunnel) handleConn(local *net.TCPConn, sess *smux.Session, conv uint32,
 	}
 
 	defer func() {
-		log.Debugf("stream %08x:%d closed", conv, stream.ID())
+		log.Debugf("[%08x:%d] stream closed", conv, stream.ID())
 		stream.Close()
 	}()
-	log.Infof("stream %08x:%d ready", conv, stream.ID())
+	log.Infof("[%08x:%d] stream opened", conv, stream.ID())
 
 	var wg sync.WaitGroup
 	wg.Add(2)
@@ -732,7 +732,7 @@ func (t *Tunnel) handleConn(local *net.TCPConn, sess *smux.Session, conv uint32,
 		defer wg.Done()
 		_, err := io.Copy(stream, local)
 		if shouldLogCopyError(err) {
-			log.Warnf("stream %08x:%d copy stream←local: %v", conv, stream.ID(), err)
+			log.Warnf("[%08x:%d] local → tunnel copy error: %v", conv, stream.ID(), err)
 		}
 		local.CloseRead()
 		stream.Close()
@@ -741,7 +741,7 @@ func (t *Tunnel) handleConn(local *net.TCPConn, sess *smux.Session, conv uint32,
 		defer wg.Done()
 		_, err := io.Copy(local, stream)
 		if shouldLogCopyError(err) {
-			log.Warnf("stream %08x:%d copy local←stream: %v", conv, stream.ID(), err)
+			log.Warnf("[%08x:%d] tunnel → local copy error: %v", conv, stream.ID(), err)
 		}
 		local.CloseWrite()
 		local.CloseRead()

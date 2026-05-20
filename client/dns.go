@@ -269,9 +269,9 @@ func newDNSPacketConn(transport net.PacketConn, addr net.Addr, domain dns.Name, 
 		default:
 		}
 		if err != nil {
-			log.Errorf("recvLoop: %v", err)
+			log.Errorf("DNS receive loop exited unexpectedly: %v", err)
 			select {
-			case c.transportErr <- fmt.Errorf("recvLoop: %w", err):
+			case c.transportErr <- fmt.Errorf("DNS receive loop: %w", err):
 			default:
 			}
 		}
@@ -284,9 +284,9 @@ func newDNSPacketConn(transport net.PacketConn, addr net.Addr, domain dns.Name, 
 		default:
 		}
 		if err != nil {
-			log.Errorf("sendLoop: %v", err)
+			log.Errorf("DNS send loop exited unexpectedly: %v", err)
 			select {
-			case c.transportErr <- fmt.Errorf("sendLoop: %w", err):
+			case c.transportErr <- fmt.Errorf("DNS send loop: %w", err):
 			default:
 			}
 		}
@@ -444,7 +444,7 @@ func (c *DNSPacketConn) recvLoop(transport net.PacketConn) error {
 		n, addr, err := transport.ReadFrom(buf[:])
 		if err != nil {
 			if err, ok := err.(net.Error); ok && err.Temporary() {
-				log.Warnf("ReadFrom temporary error: %v", err)
+				log.Warnf("transient read error on DNS socket: %v", err)
 				continue
 			}
 			return err
@@ -453,7 +453,7 @@ func (c *DNSPacketConn) recvLoop(transport net.PacketConn) error {
 		// Got a response. Try to parse it as a DNS message.
 		resp, err := dns.MessageFromWireFormat(buf[:n])
 		if err != nil {
-			log.Warnf("MessageFromWireFormat: %v", err)
+			log.Warnf("dropped malformed DNS response: %v", err)
 			continue
 		}
 
@@ -680,7 +680,7 @@ func (c *DNSPacketConn) sendLoop(transport net.PacketConn, addr net.Addr) error 
 		err := c.send(transport, p, addr)
 		if err != nil {
 			if ne, ok := err.(net.Error); ok && ne.Timeout() {
-				log.Warnf("send timeout: %v", err)
+				log.Warnf("DNS query timed out: %v", err)
 				continue
 			}
 			return err

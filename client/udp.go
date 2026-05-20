@@ -117,14 +117,14 @@ func (c *UDPPacketConn) sendRecv(p []byte) error {
 	}
 	conn, err := lc.ListenPacket(context.Background(), "udp", "")
 	if err != nil {
-		log.Warnf("udp worker: ListenPacket: %v", err)
+		log.Warnf("failed to open UDP socket for query: %v", err)
 		return err
 	}
 	defer conn.Close()
 
 	_, err = conn.WriteTo(p, c.remoteAddr)
 	if err != nil {
-		log.Warnf("udp worker: WriteTo: %v", err)
+		log.Warnf("failed to send DNS query to resolver: %v", err)
 		return err
 	}
 
@@ -140,7 +140,7 @@ func (c *UDPPacketConn) sendRecv(p []byte) error {
 
 		resp, err := dns.MessageFromWireFormat(buf[:n])
 		if err != nil {
-			log.Debugf("udp worker: MessageFromWireFormat: %v", err)
+			log.Debugf("dropped malformed DNS response from resolver: %v", err)
 			continue
 		}
 
@@ -152,7 +152,7 @@ func (c *UDPPacketConn) sendRecv(p []byte) error {
 				continue
 			}
 			// Pass it through — dns.go recvLoop will drop it as a safety net.
-			log.Debugf("udp worker: passing through error response (rcode=%d)", rcode)
+			log.Debugf("passing error response (rcode=%d) to upper layer for filtering", rcode)
 		}
 
 		// Queue the raw wire-format response for the upper layer (dns.go recvLoop).
