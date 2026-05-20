@@ -57,7 +57,7 @@ const (
 	defaultResponseQueueSize = 0
 
 	// Default TTL for Answer resource records.
-	defaultResponseTTL = 0
+	defaultResponseTTL = 300
 
 	// How long to wait for a TCP connection to upstream to be established.
 	upstreamDialTimeout = 30 * time.Second
