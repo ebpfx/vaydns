@@ -45,7 +45,7 @@ services:
     command: >
       vaydns-server -udp :53
       -domain s.example.com -upstream socks:1080
-      -idle-timeout 10s -keepalive 2s
+      -idle-timeout 30s -keepalive 5s
     depends_on:
       dns:
         condition: service_started
@@ -61,7 +61,7 @@ services:
     command: >
       vaydns-client -udp 172.28.0.10:53
       -domain s.example.com -listen 0.0.0.0:7000
-      -idle-timeout 10s -keepalive 2s -session-check-interval 500ms
+      -idle-timeout 30s -keepalive 5s
       -reconnect-min 1s -reconnect-max 5s -log-level info
     depends_on:
       server:

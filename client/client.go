@@ -37,19 +37,19 @@ import (
 
 // Default timeouts for VayDNS mode.
 const (
-	DefaultIdleTimeout              = 10 * time.Second
-	DefaultKeepAlive                = 2 * time.Second
+	DefaultIdleTimeout              = 30 * time.Second
+	DefaultKeepAlive                = 5 * time.Second
 	DefaultOpenStreamTimeout        = 10 * time.Second
 	DefaultReconnectDelay           = 1 * time.Second
 	DefaultReconnectMaxDelay        = 30 * time.Second
 	DefaultSessionCheckInterval     = 500 * time.Millisecond
-	DefaultUDPResponseTimeout       = 800 * time.Millisecond
+	DefaultUDPResponseTimeout       = 2500 * time.Millisecond
 	DefaultUDPWorkers               = 100
-	DefaultPollDelay                = 500 * time.Millisecond
-	DefaultActivePollDelay          = 200 * time.Millisecond
-	DefaultPollMaxDelay             = 2 * time.Second
-	DefaultUDPTransportStaleTimeout = 3 * time.Second
-	DefaultOpenStreamFailureLimit   = 3
+	DefaultPollDelay                = 1 * time.Second
+	DefaultActivePollDelay          = 800 * time.Millisecond
+	DefaultPollMaxDelay             = 5 * time.Second
+	DefaultUDPTransportStaleTimeout = 20 * time.Second
+	DefaultOpenStreamFailureLimit   = 10
 )
 
 // Resolver holds DNS resolver configuration.
@@ -148,8 +148,8 @@ type Tunnel struct {
 	TunnelServer TunnelServer
 
 	// Session configuration. Zero values use defaults.
-	IdleTimeout              time.Duration                 // default: 10s
-	KeepAlive                time.Duration                 // default: 2s
+	IdleTimeout              time.Duration                 // default: 30s
+	KeepAlive                time.Duration                 // default: 5s
 	OpenStreamTimeout        time.Duration                 // default: 10s
 	ReconnectMinDelay        time.Duration                 // default: 1s
 	ReconnectMaxDelay        time.Duration                 // default: 30s
@@ -157,11 +157,11 @@ type Tunnel struct {
 	PacketQueueSize          int                           // default: QueueSize (512)
 	KCPWindowSize            int                           // default: PacketQueueSize/2
 	QueueOverflowMode        turbotunnel.QueueOverflowMode // default: drop
-	PollDelay                time.Duration                 // default: 500ms
-	ActivePollDelay          time.Duration                 // default: 200ms
-	PollMaxDelay             time.Duration                 // default: 2s
-	UDPTransportStaleTimeout time.Duration                 // default: 3s
-	OpenStreamFailureLimit   int                           // default: 3 consecutive idle failures
+	PollDelay                time.Duration                 // default: 1s
+	ActivePollDelay          time.Duration                 // default: 800ms
+	PollMaxDelay             time.Duration                 // default: 5s
+	UDPTransportStaleTimeout time.Duration                 // default: 20s
+	OpenStreamFailureLimit   int                           // default: 10 consecutive idle failures
 
 	// internal state
 	wireConfig    turbotunnel.WireConfig

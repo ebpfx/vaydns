@@ -103,8 +103,8 @@ sudo ip6tables -t nat -I PREROUTING -i eth0 -p udp --dport 53 -j REDIRECT --to-p
 | `-domain NAME`       | Tunnel domain                                                     | (required) |
 | `-upstream ADDR`     | Forward tunnel streams to this TCP address                        | `127.0.0.1:10888` |
 | `-mtu N`             | Max UDP payload size for responses                                | `1232`     |
-| `-idle-timeout D`    | Session idle timeout (must match client)                          | `10s`      |
-| `-keepalive D`       | Keepalive ping interval (must match client, must be < idle-timeout) | `2s`      |
+| `-idle-timeout D`    | Session idle timeout (must match client)                          | `30s`      |
+| `-keepalive D`       | Keepalive ping interval (must match client, must be < idle-timeout) | `5s`      |
 | `-clientid-size N`   | ClientID size in bytes                                              | `1`        |
 | `-record-type TYPE`  | DNS record type for downstream data: `null`, `txt`, `hinfo`, `cname`, `a`, `aaaa`, `mx`, `ns`, `srv`, `cert`, `https`, `caa`. Must match the client. | `null`     |
 | `-queue-size N`      | Packet queue size for transport and DNS layers                    | `512`      |
@@ -136,16 +136,15 @@ sudo ip6tables -t nat -I PREROUTING -i eth0 -p udp --dport 53 -j REDIRECT --to-p
 
 | Flag                        | Description                                        | Default |
 | --------------------------- | -------------------------------------------------- | ------- |
-| `-idle-timeout D`           | Session idle timeout (must match server)                                                    | `10s`   |
-| `-keepalive D`              | Keepalive ping interval (must match server, must be < idle-timeout)                         | `2s`   |
+| `-idle-timeout D`           | Session idle timeout (must match server)                                                    | `30s`   |
+| `-keepalive D`              | Keepalive ping interval (must match server, must be < idle-timeout)                         | `5s`   |
 | `-open-stream-timeout D`    | Timeout for opening an smux stream                                                          | `10s`   |
-| `-open-stream-failure-limit N` | Retire an idle session after this many consecutive stream-open failures                  | `3`    |
+| `-open-stream-failure-limit N` | Retire an idle session after this many consecutive stream-open failures                  | `10`   |
 | `-reconnect-min D`          | Initial backoff delay for session reconnect                                                  | `1s`    |
 | `-reconnect-max D`          | Max backoff delay (must be >= reconnect-min)                                                 | `30s`   |
-| `-session-check-interval D` | How often the managed client checks session and transport health                             | `500ms` |
-| `-udp-transport-stale-timeout D` | Retire the current session if per-query UDP sees no valid response for this long while streams need transport | `3s` |
+| `-udp-transport-stale-timeout D` | Retire the current session if per-query UDP sees no valid response for this long while streams need transport | `20s` |
 
-> **Note:** `idle-timeout` and `keepalive` must be set to the same values on both client and server — mismatched values will cause one side to close the session before the other detects it. Keep `keepalive` well below `idle-timeout` (the default 5x ratio allows ~5 ping attempts before timeout).
+> **Note:** `idle-timeout` and `keepalive` must be set to the same values on both client and server — mismatched values will cause one side to close the session before the other detects it. Keep `keepalive` well below `idle-timeout` (the default 6x ratio allows ~6 ping attempts before timeout).
 >
 > **How they relate:** `keepalive` controls how often smux sends ping frames to prove the session is alive. `idle-timeout` is how long smux waits with no received data (including pings) before declaring the session dead — it applies symmetrically on both sides.
 
@@ -156,12 +155,12 @@ These flags only apply when using `-udp`. By default, each query is sent through
 | Flag                 | Description                                                                                                                                                | Default |
 | -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- | ------- |
 | `-udp-workers N`     | Concurrent UDP worker goroutines                                                                                                                           | `100`   |
-| `-udp-timeout D`     | Per-query response timeout — the total time a worker waits for a valid (NOERROR) response. Forged responses are discarded but the deadline is not extended — if no valid response arrives within this window, the query is abandoned. | `800ms` |
+| `-udp-timeout D`     | Per-query response timeout — the total time a worker waits for a valid (NOERROR) response. Forged responses are discarded but the deadline is not extended — if no valid response arrives within this window, the query is abandoned. | `2500ms` |
 | `-udp-per-query-sockets` | Use per-query UDP sockets instead of the default shared socket. With this flag, each query is sent from a new socket with a random ephemeral source port, making the tunnel harder to fingerprint or block by port. Without it, all queries share one socket and source port for the lifetime of the client — blocking that port kills the tunnel. | `false` |
 | `-udp-accept-errors` | In per-query mode, accept the first DNS response regardless of RCODE instead of waiting for a NOERROR response. This disables forged response filtering — the worker stops waiting after the first forged response, so the real response is likely lost. Only useful for debugging; not recommended in production. Ignored when `-udp-per-query-sockets` is not set. | `false` |
-| `-poll-delay D`      | Base delay before sending an empty DNS poll when idle                                                                                                      | `500ms` |
-| `-active-poll-delay D` | Poll delay cap while streams are active or being opened                                                                                                  | `200ms` |
-| `-poll-max-delay D`  | Max idle backoff between empty DNS polls                                                                                                                   | `2s`    |
+| `-poll-delay D`      | Base delay before sending an empty DNS poll when idle                                                                                                      | `1s` |
+| `-active-poll-delay D` | Poll delay cap while streams are active or being opened                                                                                                  | `800ms` |
+| `-poll-max-delay D`  | Max idle backoff between empty DNS polls                                                                                                                   | `5s`    |
 
 #### Queue and KCP tuning
 
