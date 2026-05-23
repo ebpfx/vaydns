@@ -57,7 +57,7 @@ const (
 	defaultResponseQueueSize = 0
 
 	// Default TTL for Answer resource records.
-	defaultResponseTTL = 300
+	responseTTL = 60
 
 	// How long to wait for a TCP connection to upstream to be established.
 	upstreamDialTimeout = 30 * time.Second
@@ -93,10 +93,6 @@ var (
 	// recordType is the DNS record type used for downstream data encoding.
 	// Set from the -record-type command-line flag.
 	recordType uint16 = dns.RRTypeTXT
-
-	// responseTTL is the TTL applied to Answer resource records.
-	// Set from the -ttl command-line flag.
-	responseTTL uint32 = defaultResponseTTL
 )
 
 // base32Encoding is a base32 encoding without padding.
@@ -1034,7 +1030,6 @@ func main() {
 	var responseQueueSize int
 	var responseWorkers int
 	var responseDelayStr string
-	var ttl int
 
 	flag.Usage = func() {
 		fmt.Fprintf(flag.CommandLine.Output(), `Usage:
@@ -1065,7 +1060,6 @@ Example:
 	flag.IntVar(&responseQueueSize, "response-queue-size", defaultResponseQueueSize, "pending DNS response queue size (0 = queue-size)")
 	flag.IntVar(&responseWorkers, "response-workers", defaultResponseWorkers, "number of DNS response sender workers")
 	flag.StringVar(&responseDelayStr, "response-delay", defaultResponseDelay.String(), "maximum time to hold a DNS response open for downstream data (e.g. 200ms, 500ms)")
-	flag.IntVar(&ttl, "ttl", defaultResponseTTL, "TTL for DNS Answer resource records in seconds")
 
 	var logLevel string
 	flag.StringVar(&logLevel, "log-level", "info", "log level (debug, info, warning, error)")
@@ -1091,12 +1085,6 @@ Example:
 		os.Exit(1)
 	}
 	recordType = rt
-
-	if ttl < 0 {
-		fmt.Fprintf(os.Stderr, "-ttl must be >= 0\n")
-		os.Exit(1)
-	}
-	responseTTL = uint32(ttl)
 
 	if flag.NArg() != 0 {
 		fmt.Fprintf(os.Stderr, "unexpected positional arguments\n")
