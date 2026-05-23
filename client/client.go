@@ -94,7 +94,7 @@ type TunnelServer struct {
 	RPS float64
 
 	// RecordType selects the DNS record type for downstream data.
-	// Supported values: "txt" (default), "cname", "a", "aaaa", "mx", "ns", "srv".
+	// Supported values: "txt", "null", "hinfo", "cname", "a", "aaaa", "mx", "ns", "srv", "cert", "https", "caa" (default: "null").
 	RecordType string
 }
 
@@ -106,7 +106,8 @@ func NewTunnelServer(addr string) (TunnelServer, error) {
 	}
 
 	return TunnelServer{
-		Addr: domain,
+		Addr:        domain,
+		RecordType:   "null",
 	}, nil
 }
 
@@ -121,9 +122,12 @@ func (ts *TunnelServer) wireConfig() turbotunnel.WireConfig {
 
 // effectiveRRType returns the DNS RR type for downstream data.
 func (ts *TunnelServer) effectiveRRType() uint16 {
+	if ts.RecordType == "" {
+		return dns.RRTypeNULL
+	}
 	rt, err := dns.ParseRecordType(ts.RecordType)
 	if err != nil {
-		return dns.RRTypeTXT
+		return dns.RRTypeNULL
 	}
 	return rt
 }

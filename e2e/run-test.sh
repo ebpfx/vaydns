@@ -6,7 +6,7 @@ cd "$(dirname "$0")"
 failed=0
 total=0
 
-for rt in txt cname a aaaa mx ns srv; do
+for rt in null txt cname a aaaa mx ns srv; do
     total=$((total + 1))
     echo ""
     echo "========================================"

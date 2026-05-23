@@ -92,7 +92,7 @@ var (
 
 	// recordType is the DNS record type used for downstream data encoding.
 	// Set from the -record-type command-line flag.
-	recordType uint16 = dns.RRTypeTXT
+	recordType uint16 = dns.RRTypeNULL
 )
 
 // base32Encoding is a base32 encoding without padding.
@@ -321,7 +321,8 @@ func decodeUpstreamQuery(payload []byte, clientIDSize int) (turbotunnel.ClientID
 // Along with the dns.Message, it returns the query's decoded data payload. If
 // the returned dns.Message is nil, it means that there should be no response to
 // this query. If the returned dns.Message has an Rcode() of dns.RcodeNoError,
-// the message is a candidate for for carrying downstream data in a TXT record.
+// the message is a candidate for carrying downstream data in the configured
+// DNS record type.
 func responseFor(query *dns.Message, domain dns.Name, addr net.Addr) (*dns.Message, []byte) {
 	responsePayloadSize := uint16(maxUDPPayload)
 	if int(responsePayloadSize) != maxUDPPayload {
@@ -420,9 +421,9 @@ func responseFor(query *dns.Message, domain dns.Name, addr net.Addr) (*dns.Messa
 	if question.Type != recordType {
 		// We only support the configured QTYPE.
 		resp.Flags |= dns.RcodeNameError
-		// No log message here; it's common for recursive resolvers to
-		// send NS or A queries when the client only asked for a TXT. I
-		// suspect this is related to QNAME minimization, but I'm not
+		// No log message here; it's common for recursive resolvers to send
+		// NS or A queries when the client only asked for a different record
+		// type. I suspect this is related to QNAME minimization, but I'm not
 		// sure. https://tools.ietf.org/html/rfc7816
 		return resp, nil
 	}
@@ -1053,7 +1054,7 @@ Example:
 	// idle-timeout. Should match the client's -keepalive value.
 	flag.StringVar(&keepAliveStr, "keepalive", defaultKeepAlive.String(), "keepalive ping interval (e.g. 2s, 500ms); must be less than idle-timeout")
 	flag.IntVar(&clientIDSize, "clientid-size", 1, "client ID size in bytes")
-	flag.StringVar(&recordTypeStr, "record-type", "txt", "DNS record type for downstream data (txt, null, hinfo, cname, a, aaaa, mx, ns, srv, cert, https, caa)")
+	flag.StringVar(&recordTypeStr, "record-type", "null", "DNS record type for downstream data (txt, null, hinfo, cname, a, aaaa, mx, ns, srv, cert, https, caa)")
 	flag.IntVar(&queueSize, "queue-size", turbotunnel.QueueSize, "packet queue size for DNS tunnel transport")
 	flag.IntVar(&kcpWindowSize, "kcp-window-size", 0, "KCP send/receive window size in packets (0 = queue-size/2)")
 	flag.StringVar(&queueOverflowStr, "queue-overflow", string(turbotunnel.DefaultQueueOverflowMode), "queue overflow behavior: drop or block")

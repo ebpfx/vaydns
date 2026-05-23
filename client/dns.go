@@ -514,8 +514,8 @@ func chunks(p []byte, n int) [][]byte {
 // The encoded bytes are base32-encoded, split into 63-byte labels, and
 // appended with the tunnel domain to form the DNS query name. Label count
 // and total QNAME length are constrained by maxQnameLen and maxNumLabels.
-// The query QTYPE is set to rrType (e.g. TXT, CNAME, A) to match the
-// server's configured response encoding.
+	// The query QTYPE is set to rrType to match the server's configured
+	// response encoding.
 func (c *DNSPacketConn) send(transport net.PacketConn, p []byte, addr net.Addr) error {
 	const labelLen = 63 // DNS maximum label size
 

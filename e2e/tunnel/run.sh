@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # Test: tunnel — client fetches nginx page through DNS tunnel.
 # Usage: bash run.sh [record-type]
-# Examples: bash run.sh          (defaults to txt)
+# Examples: bash run.sh          (defaults to null)
 #           bash run.sh cname
 set -euo pipefail
 cd "$(dirname "$0")"
 
-RT="${1:-txt}"
-if [ "$RT" = "txt" ]; then
+RT="${1:-null}"
+if [ "$RT" = "null" ]; then
     export RECORD_TYPE_FLAG=""
 else
     export RECORD_TYPE_FLAG="-record-type $RT"

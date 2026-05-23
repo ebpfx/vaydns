@@ -75,8 +75,9 @@ const (
 	ExtendedRcodeBadVers = 16 // a.k.a. BADVERS
 )
 
-// ParseRecordType converts a record type string ("txt", "cname", "a", etc.)
-// to the corresponding RR type constant. Returns an error for unknown types.
+// ParseRecordType converts a record type string ("txt", "null", "hinfo",
+// "cname", "a", "aaaa", "mx", "ns", "srv", "cert", "https", or "caa") to
+// the corresponding RR type constant. Returns an error for unknown types.
 func ParseRecordType(s string) (uint16, error) {
 	switch strings.ToLower(s) {
 	case "txt":
@@ -104,7 +105,7 @@ func ParseRecordType(s string) (uint16, error) {
 	case "caa":
 		return RRTypeCAA, nil
 	default:
-		return 0, fmt.Errorf("unknown record type %q: must be one of: txt, cname, null, hinfo, a, aaaa, mx, ns, srv, cert, https, caa", s)
+		return 0, fmt.Errorf("unknown record type %q: must be one of: txt, null, hinfo, cname, a, aaaa, mx, ns, srv, cert, https, caa", s)
 	}
 }
 

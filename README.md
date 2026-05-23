@@ -106,7 +106,7 @@ sudo ip6tables -t nat -I PREROUTING -i eth0 -p udp --dport 53 -j REDIRECT --to-p
 | `-idle-timeout D`    | Session idle timeout (must match client)                          | `10s`      |
 | `-keepalive D`       | Keepalive ping interval (must match client, must be < idle-timeout) | `2s`      |
 | `-clientid-size N`   | ClientID size in bytes                                              | `1`        |
-| `-record-type TYPE`  | DNS record type for downstream data: `txt`, `null`, `hinfo`, `cname`, `a`, `aaaa`, `mx`, `ns`, `srv`, `cert`, `https`, `caa`. Must match the client. | `txt`      |
+| `-record-type TYPE`  | DNS record type for downstream data: `null`, `txt`, `hinfo`, `cname`, `a`, `aaaa`, `mx`, `ns`, `srv`, `cert`, `https`, `caa`. Must match the client. | `null`     |
 | `-queue-size N`      | Packet queue size for transport and DNS layers                    | `512`      |
 | `-kcp-window-size N` | KCP send/receive window size in packets (0 = queue-size/2)        | `0`        |
 | `-queue-overflow MODE` | Queue overflow behavior: `drop` (silent discard) or `block` (backpressure) | `drop`     |
@@ -200,7 +200,7 @@ These reduce upstream throughput but improve compatibility. The minimum effectiv
 | ------------------ | ---------------------------------------------------------- | --------------- |
 | `-rps N`           | Rate limit outgoing DNS queries per second (0 = unlimited). Uses a token bucket with 1-second burst allowance. | `0`             |
 | `-clientid-size N` | ClientID size in bytes | `1`             |
-| `-record-type TYPE` | DNS record type for downstream data: `txt`, `null`, `hinfo`, `cname`, `a`, `aaaa`, `mx`, `ns`, `srv`, `cert`, `https`, `caa`. Must match the server. | `txt`           |
+| `-record-type TYPE` | DNS record type for downstream data: `null`, `txt`, `hinfo`, `cname`, `a`, `aaaa`, `mx`, `ns`, `srv`, `cert`, `https`, `caa`. Must match the server. | `null`          |
 | `-log-level LEVEL` | Log level: debug, info, warning, error                     | `info`          |
 
 ## Proxy examples
@@ -307,12 +307,12 @@ Both client and server log their effective MTU at startup. The server's effectiv
 
 ### Record types
 
-VayDNS supports multiple DNS record types for downstream data encoding. Both client and server must use the same `-record-type`. The default is `txt`.
+VayDNS supports multiple DNS record types for downstream data encoding. Both client and server must use the same `-record-type`. The default is `null`.
 
 | Type | Description | Capacity |
 | ---- | ----------- | -------- |
-| `txt` | TXT record (default). Highest capacity. | Bounded by UDP payload (~1200 bytes) |
-| `null` | NULL record. Raw binary payload in a single RR. Some recursive resolvers may filter or refuse to relay NULL records. | Bounded by UDP payload |
+| `null` | NULL record (default). Raw binary payload in a single RR. Some recursive resolvers may filter or refuse to relay NULL records. | Bounded by UDP payload |
+| `txt` | TXT record. Highest capacity. | Bounded by UDP payload (~1200 bytes) |
 | `hinfo` | HINFO record. Payload split across CPU and OS character-string fields. | 510 bytes |
 | `cname` | CNAME record. Data encoded as a DNS name under the tunnel domain. | Bounded by 255-byte DNS name limit |
 | `ns` | NS record. Same encoding as CNAME. | Same as CNAME |
@@ -337,7 +337,7 @@ End-to-end tests run the full tunnel stack in Docker containers. Requires Docker
 bash e2e/run-test.sh
 
 # Or individually
-bash e2e/tunnel/run.sh           # basic tunnel (TXT, default)
+bash e2e/tunnel/run.sh           # basic tunnel (NULL, default)
 bash e2e/tunnel/run.sh cname     # tunnel with CNAME records
 bash e2e/socks-download/run.sh   # 10MB file download via SOCKS5
 bash e2e/recovery/run.sh         # server crash recovery
