@@ -781,6 +781,30 @@ func TestEncodeDecodeRDataA(t *testing.T) {
 	}
 }
 
+func TestDecodeRDataARoundTripOutOfOrder(t *testing.T) {
+	p := []byte{0x01, 0x02, 0x03, 0x04, 0x05}
+	chunks := EncodeRDataA(p)
+	if len(chunks) < 2 {
+		t.Fatalf("expected multiple chunks, got %d", len(chunks))
+	}
+	chunks[0], chunks[1] = chunks[1], chunks[0]
+	decoded, err := DecodeRDataA(chunks)
+	if err != nil {
+		t.Fatalf("DecodeRDataA(out of order): %v", err)
+	}
+	if !bytes.Equal(decoded, p) {
+		t.Fatalf("DecodeRDataA(out of order) = %x, want %x", decoded, p)
+	}
+}
+
+func TestDecodeRDataARejectsMissingChunk(t *testing.T) {
+	chunks := EncodeRDataA([]byte{0x01, 0x02, 0x03, 0x04, 0x05})
+	chunks = chunks[:len(chunks)-1]
+	if _, err := DecodeRDataA(chunks); err != io.ErrUnexpectedEOF {
+		t.Fatalf("DecodeRDataA(missing chunk) = %v, want %v", err, io.ErrUnexpectedEOF)
+	}
+}
+
 func TestEncodeDecodeRDataAAAA(t *testing.T) {
 	for _, p := range [][]byte{
 		{},

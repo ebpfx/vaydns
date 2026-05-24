@@ -769,7 +769,8 @@ func DNSNameCapacity(domain dns.Name, maxQnameLen int, maxNumLabels int) int {
 		domainWireLen += 1 + len(label)
 	}
 
-	availableWireBytes := maxQnameLen - domainWireLen
+	// Subtract the root null label that terminates the full QNAME.
+	availableWireBytes := maxQnameLen - domainWireLen - 1
 	if availableWireBytes <= 0 {
 		return 0
 	}

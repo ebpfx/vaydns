@@ -121,6 +121,17 @@ func TestDNSNameCapacityBoundaryConditions(t *testing.T) {
 	}
 }
 
+func TestDNSNameCapacityAccountsForRootLabel(t *testing.T) {
+	domain, err := dns.ParseName(".")
+	if err != nil {
+		t.Fatalf("ParseName: %v", err)
+	}
+
+	if got, want := DNSNameCapacity(domain, 65, 0), 39; got != want {
+		t.Fatalf("DNSNameCapacity(root, 65, 0) = %d, want %d", got, want)
+	}
+}
+
 func TestTunnelServerDefaults(t *testing.T) {
 	ts, err := NewTunnelServer("t.example.com")
 	if err != nil {

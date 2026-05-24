@@ -76,6 +76,13 @@ func TestDecodeUpstreamQueryRejectsMalformedPoll(t *testing.T) {
 	}
 }
 
+func TestComputeMaxEncodedPayloadNameBasedAccountsForRootLabel(t *testing.T) {
+	domain := dns.Name{bytes.Repeat([]byte{'a'}, 63)}
+	if got, want := computeMaxEncodedPayloadNameBased(domain), 116; got != want {
+		t.Fatalf("computeMaxEncodedPayloadNameBased = %d, want %d", got, want)
+	}
+}
+
 func TestRecordTypeMaxEncodedPayloadHINFO(t *testing.T) {
 	prevRecordType := recordType
 	defer func() { recordType = prevRecordType }()

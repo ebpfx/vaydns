@@ -986,28 +986,81 @@ func DecodeRDataHTTPS(data []byte, domain Name) ([]byte, error) {
 }
 
 // encodeRDataMultiRR encodes a payload as multiple fixed-size RDATA chunks.
-// The payload is prefixed with a 2-byte big-endian length, then split into
-// chunkSize-byte chunks (last chunk zero-padded).
+// Each chunk carries a 2-byte [index,total] header followed by payload bytes.
+// The payload is prefixed with a 2-byte big-endian length, then split across
+// chunks. chunkSize includes the 2-byte header.
 func encodeRDataMultiRR(p []byte, chunkSize int) [][]byte {
+	if chunkSize <= 2 {
+		panic("chunkSize must be greater than 2")
+	}
+	payloadSize := chunkSize - 2
 	buf := make([]byte, 2+len(p))
 	binary.BigEndian.PutUint16(buf, uint16(len(p)))
 	copy(buf[2:], p)
+	total := (len(buf) + payloadSize - 1) / payloadSize
+	if total > 255 {
+		panic("too many multi-RR chunks")
+	}
 	var chunks [][]byte
+	var idx byte
 	for len(buf) > 0 {
 		chunk := make([]byte, chunkSize)
-		copy(chunk, buf)
-		buf = buf[min(chunkSize, len(buf)):]
+		chunk[0] = idx
+		chunk[1] = byte(total)
+		copy(chunk[2:], buf)
+		buf = buf[min(payloadSize, len(buf)):]
 		chunks = append(chunks, chunk)
+		idx++
 	}
 	return chunks
 }
 
 // decodeRDataMultiRR decodes multiple fixed-size RDATA chunks back to the
-// original payload by concatenating them and reading the 2-byte length prefix.
+// original payload by reordering chunks, stripping the 2-byte [index,total]
+// header, concatenating payload bytes, and reading the length prefix.
 func decodeRDataMultiRR(chunks [][]byte) ([]byte, error) {
-	var buf bytes.Buffer
+	if len(chunks) == 0 {
+		return nil, io.ErrUnexpectedEOF
+	}
+	chunkSize := len(chunks[0])
+	if chunkSize <= 2 {
+		return nil, io.ErrUnexpectedEOF
+	}
+	total := 0
+	seen := make([]bool, 256)
+	ordered := make([][]byte, 256)
 	for _, chunk := range chunks {
-		buf.Write(chunk)
+		if len(chunk) != chunkSize {
+			return nil, io.ErrUnexpectedEOF
+		}
+		idx := int(chunk[0])
+		chunkTotal := int(chunk[1])
+		if chunkTotal == 0 {
+			return nil, io.ErrUnexpectedEOF
+		}
+		if total == 0 {
+			total = chunkTotal
+		} else if total != chunkTotal {
+			return nil, io.ErrUnexpectedEOF
+		}
+		if idx >= total {
+			return nil, io.ErrUnexpectedEOF
+		}
+		if seen[idx] {
+			return nil, io.ErrUnexpectedEOF
+		}
+		seen[idx] = true
+		ordered[idx] = chunk[2:]
+	}
+	if len(chunks) != total {
+		return nil, io.ErrUnexpectedEOF
+	}
+	var buf bytes.Buffer
+	for i := 0; i < total; i++ {
+		if !seen[i] {
+			return nil, io.ErrUnexpectedEOF
+		}
+		buf.Write(ordered[i])
 	}
 	data := buf.Bytes()
 	if len(data) < 2 {
@@ -1021,13 +1074,15 @@ func decodeRDataMultiRR(chunks [][]byte) ([]byte, error) {
 	return data[:n], nil
 }
 
-// EncodeRDataA encodes a payload as multiple A record RDATA chunks (4 bytes each).
+// EncodeRDataA encodes a payload as multiple A record RDATA chunks (4 bytes each),
+// using a 2-byte [index,total] header plus 2 bytes of payload per chunk.
 func EncodeRDataA(p []byte) [][]byte { return encodeRDataMultiRR(p, 4) }
 
 // DecodeRDataA decodes multiple A record RDATA chunks back to the original payload.
 func DecodeRDataA(chunks [][]byte) ([]byte, error) { return decodeRDataMultiRR(chunks) }
 
-// EncodeRDataAAAA encodes a payload as multiple AAAA record RDATA chunks (16 bytes each).
+// EncodeRDataAAAA encodes a payload as multiple AAAA record RDATA chunks (16 bytes each),
+// using a 2-byte [index,total] header plus 14 bytes of payload per chunk.
 func EncodeRDataAAAA(p []byte) [][]byte { return encodeRDataMultiRR(p, 16) }
 
 // DecodeRDataAAAA decodes multiple AAAA record RDATA chunks back to the original payload.

@@ -834,8 +834,12 @@ func computeMaxEncodedPayloadNameBased(domain dns.Name) int {
 
 // computeMaxEncodedPayloadMultiRR computes the maximum raw payload bytes that
 // can fit in multiple fixed-size RRs (A=4 bytes, AAAA=16 bytes) within a DNS
-// response of at most limit bytes. Uses binary search like the TXT computation.
+// response of at most limit bytes. Each RR carries a 2-byte [index,total]
+// header, so the payload portion per RR is chunkSize-2 bytes.
 func computeMaxEncodedPayloadMultiRR(limit int, chunkSize int) int {
+	if chunkSize <= 2 {
+		panic("chunkSize must be greater than 2")
+	}
 	maxLengthName, err := dns.NewName([][]byte{
 		[]byte("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"),
 		[]byte("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"),
@@ -875,9 +879,10 @@ func computeMaxEncodedPayloadMultiRR(limit int, chunkSize int) int {
 	high := 32768
 	for low+1 < high {
 		mid := (low + high) / 2
-		// Simulate encoding: 2-byte length prefix + payload -> ceil((2+mid)/chunkSize) RRs.
+		// Simulate encoding: 2-byte length prefix + payload -> ceil((2+mid)/(chunkSize-2)) RRs.
 		totalBytes := 2 + mid
-		numChunks := (totalBytes + chunkSize - 1) / chunkSize
+		payloadPerChunk := chunkSize - 2
+		numChunks := (totalBytes + payloadPerChunk - 1) / payloadPerChunk
 		resp.Answer = make([]dns.RR, numChunks)
 		for i := range numChunks {
 			resp.Answer[i] = dns.RR{
