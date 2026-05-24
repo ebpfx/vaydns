@@ -1047,6 +1047,52 @@ func TestReadRRHTTPSCompression(t *testing.T) {
 	}
 }
 
+func TestReadRRHTTPSCompressionWithParams(t *testing.T) {
+	msg := []byte{
+		0x00, 0x01,
+		0x81, 0x80,
+		0x00, 0x01,
+		0x00, 0x01,
+		0x00, 0x00,
+		0x00, 0x00,
+		0x07, 'e', 'x', 'a', 'm', 'p', 'l', 'e',
+		0x03, 'c', 'o', 'm',
+		0x00,
+		0x00, 0x41,
+		0x00, 0x01,
+		0xc0, 0x0c,
+		0x00, 0x41,
+		0x00, 0x01,
+		0x00, 0x00, 0x0e, 0x10,
+		0x00, 0x0d,
+		0x00, 0x01,
+		0x03, 'w', 'w', 'w',
+		0xc0, 0x0c,
+		0x00, 0x01,
+		0x00, 0x01,
+		0xaa,
+	}
+
+	parsed, err := MessageFromWireFormat(msg)
+	if err != nil {
+		t.Fatalf("MessageFromWireFormat: %v", err)
+	}
+	if len(parsed.Answer) != 1 {
+		t.Fatalf("expected 1 answer, got %d", len(parsed.Answer))
+	}
+	answer := parsed.Answer[0]
+	if answer.Type != RRTypeHTTPS {
+		t.Fatalf("expected HTTPS type, got %d", answer.Type)
+	}
+	expectedName := Name([][]byte{[]byte("www"), []byte("example"), []byte("com")})
+	expectedWire := expectedName.WireFormat()
+	expected := append([]byte{0x00, 0x01}, expectedWire...)
+	expected = append(expected, 0x00, 0x01, 0x00, 0x01, 0xaa)
+	if !bytes.Equal(answer.Data, expected) {
+		t.Errorf("HTTPS RDATA with params: got %x, want %x", answer.Data, expected)
+	}
+}
+
 func TestParseRecordType(t *testing.T) {
 	for _, test := range []struct {
 		s  string

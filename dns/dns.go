@@ -455,9 +455,41 @@ func readRR(r io.ReadSeeker) (RR, error) {
 			return rr, err
 		}
 	case rdLength > 2 && rr.Type == RRTypeHTTPS:
-		if err := readRRName(2); err != nil {
+		startPos, err := r.Seek(0, io.SeekCurrent)
+		if err != nil {
 			return rr, err
 		}
+		header := make([]byte, 2)
+		if _, err := io.ReadFull(r, header); err != nil {
+			return rr, err
+		}
+		name, err := readName(r)
+		if err != nil {
+			// Fallback: read raw bytes instead.
+			if _, seekErr := r.Seek(startPos, io.SeekStart); seekErr != nil {
+				return rr, seekErr
+			}
+			rr.Data = make([]byte, rdLength)
+			_, err = io.ReadFull(r, rr.Data)
+			return rr, err
+		}
+		endPos, err := r.Seek(0, io.SeekCurrent)
+		if err != nil {
+			return rr, err
+		}
+		nameWire := name.WireFormat()
+		tailLen := startPos + int64(rdLength) - endPos
+		if tailLen < 0 {
+			return rr, io.ErrUnexpectedEOF
+		}
+		tail := make([]byte, int(tailLen))
+		if _, err := io.ReadFull(r, tail); err != nil {
+			return rr, err
+		}
+		rr.Data = make([]byte, 2+len(nameWire)+len(tail))
+		copy(rr.Data, header)
+		copy(rr.Data[2:], nameWire)
+		copy(rr.Data[2+len(nameWire):], tail)
 	default:
 		rr.Data = make([]byte, rdLength)
 		_, err = io.ReadFull(r, rr.Data)
