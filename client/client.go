@@ -306,6 +306,10 @@ func (t *Tunnel) InitiateDNSPacketConn(domain dns.Name) error {
 	}
 	maxQnameLen := t.TunnelServer.effectiveMaxQnameLen()
 	rrType := t.TunnelServer.effectiveRRType()
+	workers := t.Resolver.UDPWorkers
+	if workers <= 0 {
+		workers = DefaultUDPWorkers
+	}
 	t.dnsPacketConn = newDNSPacketConn(
 		t.resolverConn,
 		t.remoteAddr,
@@ -320,6 +324,7 @@ func (t *Tunnel) InitiateDNSPacketConn(domain dns.Name) error {
 		t.PollDelay,
 		t.ActivePollDelay,
 		t.PollMaxDelay,
+		workers,
 		t.effectivePacketQueueSize(),
 		t.effectiveQueueOverflowMode(),
 	)
@@ -450,6 +455,10 @@ func (t *Tunnel) buildFullStack(mtu int, domain dns.Name) (*tunnelStack, error) 
 	if t.TunnelServer.RPS > 0 {
 		rateLimiter = NewRateLimiter(t.TunnelServer.RPS)
 	}
+	workers := t.Resolver.UDPWorkers
+	if workers <= 0 {
+		workers = DefaultUDPWorkers
+	}
 	stack.dnsPacketConn = newDNSPacketConn(
 		stack.resolverConn,
 		stack.remoteAddr,
@@ -464,6 +473,7 @@ func (t *Tunnel) buildFullStack(mtu int, domain dns.Name) (*tunnelStack, error) 
 		t.PollDelay,
 		t.ActivePollDelay,
 		t.PollMaxDelay,
+		workers,
 		t.effectivePacketQueueSize(),
 		t.effectiveQueueOverflowMode(),
 	)

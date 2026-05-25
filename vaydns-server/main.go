@@ -105,6 +105,12 @@ type ServerStats struct {
 	responseDropped uint64
 }
 
+var bufferPool = sync.Pool{
+	New: func() interface{} {
+		return new(bytes.Buffer)
+	},
+}
+
 func (s *ServerStats) incTotal()           { atomic.AddUint64(&s.total, 1) }
 func (s *ServerStats) incSuccess()         { atomic.AddUint64(&s.success, 1) }
 func (s *ServerStats) incResponseDropped() { atomic.AddUint64(&s.responseDropped, 1) }
@@ -429,7 +435,24 @@ func responseFor(query *dns.Message, domain dns.Name, addr net.Addr) (*dns.Messa
 		return resp, nil
 	}
 
-	encoded := bytes.ToUpper(bytes.Join(prefix, nil))
+	// Joining and converting to uppercase can be done with fewer allocations.
+	totalLen := 0
+	for _, label := range prefix {
+		totalLen += len(label)
+	}
+	encoded := make([]byte, totalLen)
+	pos := 0
+	for _, label := range prefix {
+		copy(encoded[pos:], label)
+		for i := 0; i < len(label); i++ {
+			b := encoded[pos+i]
+			if b >= 'a' && b <= 'z' {
+				encoded[pos+i] = b - ('a' - 'A')
+			}
+		}
+		pos += len(label)
+	}
+
 	payload := make([]byte, base32Encoding.DecodedLen(len(encoded)))
 	n, err := base32Encoding.Decode(payload, encoded)
 	if err != nil {
@@ -647,7 +670,9 @@ func sendLoop(dnsConn net.PacketConn, ttConn *turbotunnel.QueuePacketConn, ch <-
 			},
 		}
 
-		var payload bytes.Buffer
+		payload := bufferPool.Get().(*bytes.Buffer)
+		payload.Reset()
+
 		limit := maxEncodedPayload
 		waitDelay := responseDelay
 		if rec.IsPoll {
@@ -689,7 +714,7 @@ func sendLoop(dnsConn net.PacketConn, ttConn *turbotunnel.QueuePacketConn, ch <-
 			if int(uint16(len(p))) != len(p) {
 				panic(len(p))
 			}
-			binary.Write(&payload, binary.BigEndian, uint16(len(p)))
+			binary.Write(payload, binary.BigEndian, uint16(len(p)))
 			payload.Write(p)
 		}
 		timer.Stop()
@@ -700,6 +725,7 @@ func sendLoop(dnsConn net.PacketConn, ttConn *turbotunnel.QueuePacketConn, ch <-
 			rec.Resp.Flags = (rec.Resp.Flags & 0xfff0) | dns.RcodeServerFailure
 			rec.Resp.Answer = nil
 		}
+		bufferPool.Put(payload)
 	}
 
 	writeResponse(dnsConn, rec)

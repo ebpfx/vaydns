@@ -2,6 +2,7 @@ package client
 
 import (
 	"bytes"
+	"encoding/base32"
 	"io"
 	"net"
 	"testing"
@@ -153,6 +154,8 @@ func (c *capturePacketConn) SetDeadline(time.Time) error      { return nil }
 func (c *capturePacketConn) SetReadDeadline(time.Time) error  { return nil }
 func (c *capturePacketConn) SetWriteDeadline(time.Time) error { return nil }
 
+var testBase32Encoding = base32.NewEncoding("abcdefghijklmnopqrstuvwxyz234567").WithPadding(base32.NoPadding)
+
 func decodeQueryPayload(t *testing.T, buf []byte, domain dns.Name) []byte {
 	t.Helper()
 
@@ -171,8 +174,8 @@ func decodeQueryPayload(t *testing.T, buf []byte, domain dns.Name) []byte {
 	for _, label := range labels {
 		encoded = append(encoded, label...)
 	}
-	decoded := make([]byte, base32Encoding.DecodedLen(len(encoded)))
-	n, err := base32Encoding.Decode(decoded, bytes.ToUpper(encoded))
+	decoded := make([]byte, testBase32Encoding.DecodedLen(len(encoded)))
+	n, err := testBase32Encoding.Decode(decoded, encoded)
 	if err != nil {
 		t.Fatalf("base32 decode: %v", err)
 	}

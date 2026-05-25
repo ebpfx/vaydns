@@ -42,8 +42,16 @@ const (
 	pollLimit = 16
 )
 
-// base32Encoding is a base32 encoding without padding.
-var base32Encoding = base32.StdEncoding.WithPadding(base32.NoPadding)
+// base32Encoding is a base32 encoding without padding, using lowercase
+// characters to avoid a separate conversion step. DNS is case-insensitive,
+// but lowercase is less likely to stand out in logs.
+var base32Encoding = base32.NewEncoding("abcdefghijklmnopqrstuvwxyz234567").WithPadding(base32.NoPadding)
+
+var bufferPool = sync.Pool{
+	New: func() interface{} {
+		return new(bytes.Buffer)
+	},
+}
 
 // forgedInfoMilestones defines the exact totals at which an INFO log is
 // emitted. After the last explicit milestone the interval logic in
@@ -211,13 +219,13 @@ type DNSPacketConn struct {
 // maxNumLabels is the max number of data labels (0 = unlimited).
 // forgedStats is shared with the transport layer (e.g. UDPPacketConn) for
 // consistent forged response tracking; if nil, a new instance is created.
-func NewDNSPacketConn(transport net.PacketConn, addr net.Addr, domain dns.Name, rateLimiter *RateLimiter, maxQnameLen int, maxNumLabels int, wireConfig turbotunnel.WireConfig, forgedStats *ForgedStats, rrType uint16, queueSize int, overflowMode turbotunnel.QueueOverflowMode) *DNSPacketConn {
-	return newDNSPacketConn(transport, addr, domain, rateLimiter, maxQnameLen, maxNumLabels, wireConfig, forgedStats, rrType, nil, DefaultPollDelay, DefaultActivePollDelay, DefaultPollMaxDelay, queueSize, overflowMode)
+func NewDNSPacketConn(transport net.PacketConn, addr net.Addr, domain dns.Name, rateLimiter *RateLimiter, maxQnameLen int, maxNumLabels int, wireConfig turbotunnel.WireConfig, forgedStats *ForgedStats, rrType uint16, numWorkers int, queueSize int, overflowMode turbotunnel.QueueOverflowMode) *DNSPacketConn {
+	return newDNSPacketConn(transport, addr, domain, rateLimiter, maxQnameLen, maxNumLabels, wireConfig, forgedStats, rrType, nil, DefaultPollDelay, DefaultActivePollDelay, DefaultPollMaxDelay, numWorkers, queueSize, overflowMode)
 }
 
 // newDNSPacketConn is the internal constructor that can optionally receive a
 // pointer to the active stream counter for stream-aware polling.
-func newDNSPacketConn(transport net.PacketConn, addr net.Addr, domain dns.Name, rateLimiter *RateLimiter, maxQnameLen int, maxNumLabels int, wireConfig turbotunnel.WireConfig, forgedStats *ForgedStats, rrType uint16, activeStreams *atomic.Int32, pollDelay time.Duration, activePollDelay time.Duration, pollMaxDelay time.Duration, queueSize int, overflowMode turbotunnel.QueueOverflowMode) *DNSPacketConn {
+func newDNSPacketConn(transport net.PacketConn, addr net.Addr, domain dns.Name, rateLimiter *RateLimiter, maxQnameLen int, maxNumLabels int, wireConfig turbotunnel.WireConfig, forgedStats *ForgedStats, rrType uint16, activeStreams *atomic.Int32, pollDelay time.Duration, activePollDelay time.Duration, pollMaxDelay time.Duration, numWorkers int, queueSize int, overflowMode turbotunnel.QueueOverflowMode) *DNSPacketConn {
 	if maxQnameLen <= 0 || maxQnameLen > 253 {
 		maxQnameLen = 253
 	}
@@ -235,6 +243,9 @@ func newDNSPacketConn(transport net.PacketConn, addr net.Addr, domain dns.Name, 
 	}
 	if forgedStats == nil {
 		forgedStats = &ForgedStats{}
+	}
+	if numWorkers <= 0 {
+		numWorkers = 1
 	}
 	// Generate a new random ClientID.
 	clientID := turbotunnel.NewClientID(wireConfig.ClientIDSize)
@@ -277,7 +288,7 @@ func newDNSPacketConn(transport net.PacketConn, addr net.Addr, domain dns.Name, 
 		}
 	}()
 	go func() {
-		err := c.sendLoop(transport, addr)
+		err := c.sendLoop(transport, addr, numWorkers)
 		select {
 		case <-c.QueuePacketConn.Closed():
 			return
@@ -552,26 +563,26 @@ func (c *DNSPacketConn) send(transport net.PacketConn, p []byte, addr net.Addr) 
 		}
 	}
 
-	var decoded []byte
-	{
-		var buf bytes.Buffer
-		buf.Write(c.clientID.Bytes())
-		if len(p) > 0 {
-			if len(p) > c.wireConfig.MaxDataLen() {
-				return fmt.Errorf("too long")
-			}
-			buf.WriteByte(byte(len(p)))
-			buf.Write(p)
-		} else {
-			buf.WriteByte(pollMarker)
-			io.CopyN(&buf, rand.Reader, pollNonceLen)
+	buf := bufferPool.Get().(*bytes.Buffer)
+	buf.Reset()
+	defer bufferPool.Put(buf)
+
+	buf.Write(c.clientID.Bytes())
+	if len(p) > 0 {
+		if len(p) > c.wireConfig.MaxDataLen() {
+			return fmt.Errorf("too long")
 		}
-		decoded = buf.Bytes()
+		buf.WriteByte(byte(len(p)))
+		buf.Write(p)
+	} else {
+		buf.WriteByte(pollMarker)
+		io.CopyN(buf, rand.Reader, pollNonceLen)
 	}
+	decoded := buf.Bytes()
 
 	encoded := make([]byte, base32Encoding.EncodedLen(len(decoded)))
 	base32Encoding.Encode(encoded, decoded)
-	encoded = bytes.ToLower(encoded)
+
 	// Truncate encoded data to fit within constraints.
 	if len(encoded) > encodedCapacity {
 		encoded = encoded[:encodedCapacity]
@@ -606,19 +617,56 @@ func (c *DNSPacketConn) send(transport net.PacketConn, p []byte, addr net.Addr) 
 			},
 		},
 	}
-	buf, err := query.WireFormat()
+	bufWire, err := query.WireFormat()
 	if err != nil {
 		return err
 	}
 
-	_, err = transport.WriteTo(buf, addr)
+	_, err = transport.WriteTo(bufWire, addr)
 	return err
+}
+
+// sendWorker is a background worker that dequeues packets from workChan,
+// applies rate limiting, and sends them on the network.
+func (c *DNSPacketConn) sendWorker(transport net.PacketConn, addr net.Addr, workChan <-chan []byte) {
+	closed := c.QueuePacketConn.Closed()
+	for {
+		select {
+		case <-closed:
+			return
+		case p, ok := <-workChan:
+			if !ok {
+				return
+			}
+			c.rateLimiter.Wait()
+			// Re-check closed after rate limit wait.
+			select {
+			case <-closed:
+				return
+			default:
+			}
+			err := c.send(transport, p, addr)
+			if err != nil {
+				if ne, ok := err.(net.Error); ok && ne.Timeout() {
+					log.Warnf("DNS query timed out: %v", err)
+					continue
+				}
+				log.Debugf("DNS send error: %v", err)
+			}
+		}
+	}
 }
 
 // sendLoop takes packets that have been written using c.WriteTo, and sends them
 // on the network using send. It also does polling with empty packets when
 // requested by pollChan or after a timeout.
-func (c *DNSPacketConn) sendLoop(transport net.PacketConn, addr net.Addr) error {
+func (c *DNSPacketConn) sendLoop(transport net.PacketConn, addr net.Addr, numWorkers int) error {
+	workChan := make(chan []byte)
+	defer close(workChan)
+	for i := 0; i < numWorkers; i++ {
+		go c.sendWorker(transport, addr, workChan)
+	}
+
 	pollDelay := c.currentPollDelay()
 	pollTimer := time.NewTimer(pollDelay)
 	defer pollTimer.Stop()
@@ -666,28 +714,20 @@ func (c *DNSPacketConn) sendLoop(transport net.PacketConn, addr net.Addr) error 
 			// in response to a received packet. Reset the poll
 			// delay to initial.
 			if !pollTimer.Stop() {
-				<-pollTimer.C
+				select {
+				case <-pollTimer.C:
+				default:
+				}
 			}
 			pollDelay = c.currentPollDelay()
 		}
 		pollTimer.Reset(pollDelay)
 
-		// Unlike in the server, in the client we assume that because
-		// the data capacity of queries is so limited, it's not worth
-		// trying to send more than one packet per query.
-		c.rateLimiter.Wait()
+		// Dispatch the packet (data or nil poll) to a worker.
 		select {
 		case <-closed:
 			return nil
-		default:
-		}
-		err := c.send(transport, p, addr)
-		if err != nil {
-			if ne, ok := err.(net.Error); ok && ne.Timeout() {
-				log.Warnf("DNS query timed out: %v", err)
-				continue
-			}
-			return err
+		case workChan <- p:
 		}
 	}
 }
