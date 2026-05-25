@@ -173,7 +173,7 @@ type Tunnel struct {
 	kcpConn       *kcp.UDPSession
 	smuxSession   *smux.Session
 	remoteAddr    net.Addr
-	activeStreams atomic.Int32
+	busyStreams atomic.Int32
 }
 
 // NewTunnel creates a Tunnel with the given resolver and server configuration.
@@ -248,6 +248,30 @@ func (t *Tunnel) effectiveKCPWindowSize() int {
 	return ws
 }
 
+func (t *Tunnel) effectiveSmuxBuffers(mtu int) (int, int) {
+	if mtu <= 0 {
+		mtu = 25
+	}
+	windowBytes := mtu * t.effectiveKCPWindowSize()
+	streamBuf := windowBytes * 4
+	if streamBuf < 8*1024 {
+		streamBuf = 8 * 1024
+	}
+	if streamBuf > 64*1024 {
+		streamBuf = 64 * 1024
+	}
+
+	receiveBuf := streamBuf * 8
+	if receiveBuf < 256*1024 {
+		receiveBuf = 256 * 1024
+	}
+	if receiveBuf < streamBuf {
+		receiveBuf = streamBuf
+	}
+
+	return streamBuf, receiveBuf
+}
+
 // InitiateResolverConnection creates the underlying transport connection
 // based on the Resolver configuration.
 func (t *Tunnel) InitiateResolverConnection() error {
@@ -303,7 +327,7 @@ func (t *Tunnel) InitiateDNSPacketConn(domain dns.Name) error {
 		t.wireConfig,
 		t.forgedStats,
 		rrType,
-		&t.activeStreams,
+		&t.busyStreams,
 		t.PollDelay,
 		t.ActivePollDelay,
 		t.PollMaxDelay,
@@ -373,7 +397,7 @@ func (t *Tunnel) InitiateSmuxSession() error {
 	smuxConfig := smux.DefaultConfig()
 	smuxConfig.KeepAliveInterval = t.KeepAlive
 	smuxConfig.KeepAliveTimeout = t.IdleTimeout
-	smuxConfig.MaxStreamBuffer = 1 * 1024 * 1024
+	smuxConfig.MaxStreamBuffer, smuxConfig.MaxReceiveBuffer = t.effectiveSmuxBuffers(t.TunnelServer.MTU)
 	sess, err := smux.Client(t.kcpConn, smuxConfig)
 	if err != nil {
 		return fmt.Errorf("opening smux session: %v", err)
@@ -480,8 +504,8 @@ func (t *Tunnel) Handle(lconn *net.TCPConn) error {
 	if err := lconn.SetNoDelay(true); err != nil {
 		log.Debugf("failed to set TCP_NODELAY on local connection: %v", err)
 	}
-	t.activeStreams.Add(1)
-	defer t.activeStreams.Add(-1)
+	t.busyStreams.Add(1)
+	defer t.busyStreams.Add(-1)
 
 	stream, err := t.OpenStream()
 	if err != nil {
@@ -678,7 +702,7 @@ func (t *Tunnel) ListenAndServe(listenAddr string) error {
 			if err != nil {
 				if ne, ok := err.(net.Error); ok && ne.Timeout() {
 					if age := t.udpTransportStaleAge(true); age > t.UDPTransportStaleTimeout {
-						log.Warnf("[%08x] DNS transport stale for %s with %d active stream(s), retiring session", conv, age.Round(time.Second), t.activeStreams.Load())
+						log.Warnf("[%08x] DNS transport stale for %s with %d active stream(s), retiring session", conv, age.Round(time.Second), t.busyStreams.Load())
 						sessionAlive = false
 						continue
 					}
@@ -747,7 +771,7 @@ func (t *Tunnel) createSession(mtu int) (*kcp.UDPSession, *smux.Session, error) 
 	smuxConfig := smux.DefaultConfig()
 	smuxConfig.KeepAliveInterval = t.KeepAlive
 	smuxConfig.KeepAliveTimeout = t.IdleTimeout
-	smuxConfig.MaxStreamBuffer = 1 * 1024 * 1024
+	smuxConfig.MaxStreamBuffer, smuxConfig.MaxReceiveBuffer = t.effectiveSmuxBuffers(mtu)
 	sess, err := smux.Client(conn, smuxConfig)
 	if err != nil {
 		conn.Close()
@@ -767,8 +791,8 @@ func (t *Tunnel) handleConn(local *net.TCPConn, sess *smux.Session, conv uint32,
 	if err := local.SetNoDelay(true); err != nil {
 		log.Debugf("[%08x] failed to set TCP_NODELAY on local connection: %v", conv, err)
 	}
-	t.activeStreams.Add(1)
-	defer t.activeStreams.Add(-1)
+	t.busyStreams.Add(1)
+	defer t.busyStreams.Add(-1)
 
 	stream, err := openStreamWithTimeout(conv, t.OpenStreamTimeout, sess.OpenStream)
 	if err != nil {

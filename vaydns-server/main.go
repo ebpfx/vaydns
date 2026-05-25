@@ -188,13 +188,44 @@ func handleStream(stream *smux.Stream, upstream string, conv uint32, idleTimeout
 	return nil
 }
 
+func effectiveSmuxBuffers(mtu int, kcpWindowSize int) (int, int) {
+	if mtu <= 0 {
+		mtu = 1232
+	}
+	if kcpWindowSize <= 0 {
+		kcpWindowSize = turbotunnel.QueueSize / 2
+		if kcpWindowSize < 1 {
+			kcpWindowSize = 1
+		}
+	}
+
+	windowBytes := mtu * kcpWindowSize
+	streamBuf := windowBytes * 4
+	if streamBuf < 8*1024 {
+		streamBuf = 8 * 1024
+	}
+	if streamBuf > 64*1024 {
+		streamBuf = 64 * 1024
+	}
+
+	receiveBuf := streamBuf * 8
+	if receiveBuf < 256*1024 {
+		receiveBuf = 256 * 1024
+	}
+	if receiveBuf < streamBuf {
+		receiveBuf = streamBuf
+	}
+
+	return streamBuf, receiveBuf
+}
+
 // acceptStreams wraps a KCP session in an smux.Session, then awaits smux
 // streams. It passes each stream to handleStream.
-func acceptStreams(conn *kcp.UDPSession, upstream string, idleTimeout time.Duration, keepAlive time.Duration, upstreamDialSem chan struct{}) error {
+func acceptStreams(conn *kcp.UDPSession, mtu int, upstream string, idleTimeout time.Duration, keepAlive time.Duration, kcpWindowSize int, upstreamDialSem chan struct{}) error {
 	smuxConfig := smux.DefaultConfig()
 	smuxConfig.KeepAliveInterval = keepAlive
 	smuxConfig.KeepAliveTimeout = idleTimeout
-	smuxConfig.MaxStreamBuffer = 1 * 1024 * 1024 // default is 65536
+	smuxConfig.MaxStreamBuffer, smuxConfig.MaxReceiveBuffer = effectiveSmuxBuffers(mtu, kcpWindowSize)
 	sess, err := smux.Server(conn, smuxConfig)
 	if err != nil {
 		return err
@@ -258,7 +289,7 @@ func acceptSessions(ln *kcp.Listener, mtu int, upstream string, idleTimeout time
 				log.Debugf("[%08x] session closed", conn.GetConv())
 				conn.Close()
 			}()
-			err := acceptStreams(conn, upstream, idleTimeout, keepAlive, upstreamDialSem)
+			err := acceptStreams(conn, mtu, upstream, idleTimeout, keepAlive, kcpWindowSize, upstreamDialSem)
 			if err != nil && !errors.Is(err, io.ErrClosedPipe) {
 				log.Warnf("[%08x] session lost: %v", conn.GetConv(), err)
 			}
