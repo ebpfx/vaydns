@@ -164,7 +164,9 @@ type Tunnel struct {
 	OpenStreamFailureLimit   int                           // default: 10 consecutive idle failures
 
 	// internal state
+	stateMu       sync.Mutex
 	wireConfig    turbotunnel.WireConfig
+	dnsDomain     dns.Name
 	forgedStats   *ForgedStats
 	resolverConn  net.PacketConn
 	dnsPacketConn *DNSPacketConn
@@ -284,6 +286,7 @@ func (t *Tunnel) InitiateResolverConnection() error {
 // InitiateDNSPacketConn wraps the resolver connection with DNS encoding.
 func (t *Tunnel) InitiateDNSPacketConn(domain dns.Name) error {
 	t.applyDefaults()
+	t.dnsDomain = domain
 	var rateLimiter *RateLimiter
 	if t.TunnelServer.RPS > 0 {
 		rateLimiter = NewRateLimiter(t.TunnelServer.RPS)
@@ -310,6 +313,26 @@ func (t *Tunnel) InitiateDNSPacketConn(domain dns.Name) error {
 	return nil
 }
 
+func (t *Tunnel) effectiveDNSDomain() dns.Name {
+	if len(t.dnsDomain) > 0 {
+		return t.dnsDomain
+	}
+	return t.TunnelServer.Addr
+}
+
+func (t *Tunnel) effectiveMTU() (int, error) {
+	mtu := t.TunnelServer.MTU
+	if mtu <= 0 {
+		maxQnameLen := t.TunnelServer.effectiveMaxQnameLen()
+		mtu = DNSNameCapacity(t.TunnelServer.Addr, maxQnameLen, t.TunnelServer.MaxNumLabels) - t.wireConfig.DataOverhead()
+	}
+	if mtu < 25 {
+		return 0, fmt.Errorf("MTU %d is too small (minimum 25); try increasing -max-qname-len (currently %d), increasing -max-num-labels (currently %d), using a shorter domain, or decreasing -clientid-size (currently %d)",
+			mtu, t.TunnelServer.effectiveMaxQnameLen(), t.TunnelServer.MaxNumLabels, t.wireConfig.ClientIDSize)
+	}
+	return mtu, nil
+}
+
 // InitiateKCPConn opens a KCP connection over the DNS packet connection.
 // If mtu is 0, it is auto-computed from the domain and QNAME constraints.
 func (t *Tunnel) InitiateKCPConn(mtu int) error {
@@ -322,7 +345,6 @@ func (t *Tunnel) InitiateKCPConn(mtu int) error {
 			mtu, t.TunnelServer.effectiveMaxQnameLen(), t.TunnelServer.MaxNumLabels, t.wireConfig.ClientIDSize)
 	}
 	t.TunnelServer.MTU = mtu
-	log.Infof("effective tunnel MTU: %d bytes", mtu)
 
 	conn, err := kcp.NewConn2(t.remoteAddr, nil, 0, 0, t.dnsPacketConn)
 	if err != nil {
@@ -408,30 +430,49 @@ func shouldLogCopyError(err error) bool {
 
 // OpenStream opens a new multiplexed stream. Returns a net.Conn.
 func (t *Tunnel) OpenStream() (net.Conn, error) {
-	if t.smuxSession == nil {
-		return nil, fmt.Errorf("smux session is not initialized")
-	}
-
+	t.applyDefaults()
 	timeout := t.OpenStreamTimeout
 	if timeout <= 0 {
 		timeout = DefaultOpenStreamTimeout
 	}
 
-	var conv uint32
-	if t.kcpConn != nil {
-		conv = t.kcpConn.GetConv()
+	var lastErr error
+	for attempt := 0; attempt < 2; attempt++ {
+		t.stateMu.Lock()
+		sess := t.smuxSession
+		conn := t.kcpConn
+		t.stateMu.Unlock()
+
+		if sess == nil || conn == nil || sess.IsClosed() {
+			if err := t.rebuildFullStack(); err != nil {
+				lastErr = err
+				break
+			}
+			continue
+		}
+
+		conv := conn.GetConv()
+		stream, err := openStreamWithTimeout(conv, timeout, sess.OpenStream)
+		if err == nil {
+			log.Debugf("[%08x:%d] stream opened", conv, stream.ID())
+			return stream, nil
+		}
+
+		lastErr = err
+		if attempt == 1 {
+			break
+		}
+		log.Warnf("[%08x] stream open failed, rebuilding full transport stack: %v", conv, err)
+		t.closeSessionLayers()
+		if rebuildErr := t.rebuildFullStack(); rebuildErr != nil {
+			return nil, fmt.Errorf("session %08x opening stream failed: %v; rebuild failed: %w", conv, err, rebuildErr)
+		}
 	}
 
-	stream, err := openStreamWithTimeout(conv, timeout, t.smuxSession.OpenStream)
-	if err != nil {
-		if errors.Is(err, smux.ErrGoAway) && t.smuxSession != nil && !t.smuxSession.IsClosed() {
-			log.Warnf("[%08x] stream ID space exhausted, cycling session", conv)
-			t.smuxSession.Close()
-		}
-		return nil, err
+	if lastErr == nil {
+		lastErr = fmt.Errorf("smux session is not initialized")
 	}
-	log.Debugf("[%08x:%d] stream opened", conv, stream.ID())
-	return stream, nil
+	return nil, lastErr
 }
 
 // Handle forwards data between a local TCP connection and a tunnel stream.
@@ -475,6 +516,20 @@ func (t *Tunnel) Handle(lconn *net.TCPConn) error {
 
 // Close tears down the tunnel and all its layers.
 func (t *Tunnel) Close() error {
+	t.stateMu.Lock()
+	defer t.stateMu.Unlock()
+	t.closeSessionLayersLocked()
+	t.closeTransportLayersLocked()
+	return nil
+}
+
+func (t *Tunnel) closeSessionLayers() {
+	t.stateMu.Lock()
+	defer t.stateMu.Unlock()
+	t.closeSessionLayersLocked()
+}
+
+func (t *Tunnel) closeSessionLayersLocked() {
 	if t.smuxSession != nil {
 		t.smuxSession.Close()
 		t.smuxSession = nil
@@ -484,13 +539,17 @@ func (t *Tunnel) Close() error {
 		t.kcpConn.Close()
 		t.kcpConn = nil
 	}
-	t.closeTransportLayers()
-	return nil
 }
 
 // closeTransportLayers tears down the DNS and resolver transport layers.
 // Safe to call multiple times.
 func (t *Tunnel) closeTransportLayers() {
+	t.stateMu.Lock()
+	defer t.stateMu.Unlock()
+	t.closeTransportLayersLocked()
+}
+
+func (t *Tunnel) closeTransportLayersLocked() {
 	if t.dnsPacketConn != nil {
 		t.dnsPacketConn.Close()
 		t.dnsPacketConn = nil
@@ -513,6 +572,39 @@ func (t *Tunnel) resetTransportLayers() error {
 		t.closeTransportLayers()
 		return fmt.Errorf("DNS packet conn: %w", err)
 	}
+	return nil
+}
+
+func (t *Tunnel) rebuildFullStack() error {
+	t.applyDefaults()
+	mtu, err := t.effectiveMTU()
+	if err != nil {
+		return err
+	}
+
+	t.stateMu.Lock()
+	defer t.stateMu.Unlock()
+
+	t.closeSessionLayersLocked()
+	t.closeTransportLayersLocked()
+
+	if err := t.InitiateResolverConnection(); err != nil {
+		return fmt.Errorf("resolver connection: %w", err)
+	}
+	if err := t.InitiateDNSPacketConn(t.effectiveDNSDomain()); err != nil {
+		t.closeTransportLayersLocked()
+		return fmt.Errorf("DNS packet conn: %w", err)
+	}
+	if err := t.InitiateKCPConn(mtu); err != nil {
+		t.closeTransportLayersLocked()
+		return err
+	}
+	if err := t.InitiateSmuxSession(); err != nil {
+		t.closeSessionLayersLocked()
+		t.closeTransportLayersLocked()
+		return err
+	}
+
 	return nil
 }
 
@@ -541,11 +633,9 @@ func (t *Tunnel) ListenAndServe(listenAddr string) error {
 		return fmt.Errorf("invalid listen address: %v", err)
 	}
 
-	maxQnameLen := t.TunnelServer.effectiveMaxQnameLen()
-	mtu := DNSNameCapacity(t.TunnelServer.Addr, maxQnameLen, t.TunnelServer.MaxNumLabels) - t.wireConfig.DataOverhead()
-	if mtu < 25 {
-		return fmt.Errorf("MTU %d is too small (minimum 25); try increasing -max-qname-len (currently %d), increasing -max-num-labels (currently %d), using a shorter domain, or decreasing -clientid-size (currently %d)",
-			mtu, maxQnameLen, t.TunnelServer.MaxNumLabels, t.wireConfig.ClientIDSize)
+	mtu, err := t.effectiveMTU()
+	if err != nil {
+		return err
 	}
 	log.Infof("effective tunnel MTU: %d bytes", mtu)
 
@@ -554,50 +644,16 @@ func (t *Tunnel) ListenAndServe(listenAddr string) error {
 		return fmt.Errorf("opening local listener: %v", err)
 	}
 	defer ln.Close()
-	defer t.closeTransportLayers()
+	defer t.Close()
 
 	for {
-		// Rebuild the transport stack from the resolver upward.
-		var transportErrCh <-chan error
+		// Rebuild the full stack from the resolver up through smux.
 		delay := t.ReconnectMinDelay
 		for {
-			if err := t.resetTransportLayers(); err != nil {
-				log.Warnf("failed to bring up DNS transport, retrying in %s: %v", delay, err)
-				time.Sleep(delay)
-				delay *= 2
-				if delay > t.ReconnectMaxDelay {
-					delay = t.ReconnectMaxDelay
-				}
-				continue
-			}
-			transportErrCh = t.dnsPacketConn.TransportErrors()
-			break
-		}
-
-		// Create a new tunnel session with exponential backoff.
-		var conn *kcp.UDPSession
-		var sess *smux.Session
-		delay = t.ReconnectMinDelay
-		for {
-			conn, sess, err = t.createSession(mtu)
-			if err == nil {
-				log.Infof("[%08x] tunnel session established", conn.GetConv())
+			if err := t.rebuildFullStack(); err == nil {
 				break
-			}
-			log.Warnf("session setup failed, rebuilding transport and retrying in %s: %v", delay, err)
-			t.closeTransportLayers()
-			for {
-				if err := t.resetTransportLayers(); err != nil {
-					log.Warnf("failed to bring up DNS transport, retrying in %s: %v", delay, err)
-					time.Sleep(delay)
-					delay *= 2
-					if delay > t.ReconnectMaxDelay {
-						delay = t.ReconnectMaxDelay
-					}
-					continue
-				}
-				transportErrCh = t.dnsPacketConn.TransportErrors()
-				break
+			} else {
+				log.Warnf("session setup failed, rebuilding transport and retrying in %s: %v", delay, err)
 			}
 			time.Sleep(delay)
 			delay *= 2
@@ -606,6 +662,11 @@ func (t *Tunnel) ListenAndServe(listenAddr string) error {
 			}
 		}
 
+		t.stateMu.Lock()
+		conn := t.kcpConn
+		sess := t.smuxSession
+		transportErrCh := t.dnsPacketConn.TransportErrors()
+		t.stateMu.Unlock()
 		sessDone := sess.CloseChan()
 		conv := conn.GetConv()
 		var openFailCount atomic.Int32
@@ -664,8 +725,7 @@ func (t *Tunnel) ListenAndServe(listenAddr string) error {
 		}
 
 		log.Warnf("[%08x] session closed, reconnecting", conv)
-		sess.Close()
-		conn.Close()
+		t.closeSessionLayers()
 		t.closeTransportLayers()
 	}
 }
@@ -693,6 +753,11 @@ func (t *Tunnel) createSession(mtu int) (*kcp.UDPSession, *smux.Session, error) 
 		conn.Close()
 		return nil, nil, fmt.Errorf("opening smux session: %v", err)
 	}
+
+	t.stateMu.Lock()
+	t.kcpConn = conn
+	t.smuxSession = sess
+	t.stateMu.Unlock()
 
 	return conn, sess, nil
 }
