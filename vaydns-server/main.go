@@ -457,9 +457,6 @@ func responseFor(query *dns.Message, domain dns.Name, addr net.Addr) (*dns.Messa
 
 // record represents a DNS message appropriate for a response to a previously
 // received query, along with metadata necessary for sending the response.
-// recvLoop sends instances of record to sendLoop via a channel. sendLoop
-// receives instances of record and may fill in the message's Answer section
-// before sending it.
 type record struct {
 	Resp     *dns.Message
 	Addr     net.Addr
@@ -467,15 +464,14 @@ type record struct {
 	IsPoll   bool
 }
 
-func enqueueResponse(ch chan *record, rec *record, stats *ServerStats) bool {
+func enqueueResponse(ch chan *record, rec *record) {
 	ch <- rec
-	return true
 }
 
 // recvLoop repeatedly calls dnsConn.ReadFrom, extracts the packets contained in
-// the incoming DNS queries, and puts them on ttConn's incoming queue. Whenever
-// a query calls for a response, constructs a partial response and passes it to
-// sendLoop over ch. Invalid DNS packets are logged and ignored.
+// the incoming DNS queries, and puts the packets they contain on ttConn's
+// incoming queue. Queries that need a response are forwarded to sendLoop over a
+// blocking channel so accepted DNS queries are never silently dropped.
 func recvLoop(domain dns.Name, dnsConn net.PacketConn, ttConn *turbotunnel.QueuePacketConn, ch chan *record, stats *ServerStats, wireConfig turbotunnel.WireConfig) error {
 	for {
 		var buf [4096]byte
@@ -510,11 +506,12 @@ func recvLoop(domain dns.Name, dnsConn net.PacketConn, ttConn *turbotunnel.Queue
 			// Feed the incoming packet to KCP.
 			ttConn.QueueIncoming(packet, clientID)
 		}
-		// If a response is called for, pass it to sendLoop via the channel.
+		// If a response is called for, pass it to the shared response loop.
 		if resp != nil {
-			if enqueueResponse(ch, &record{resp, addr, clientID, isPoll}, stats) && resp.Rcode() == dns.RcodeNoError {
+			if resp.Rcode() == dns.RcodeNoError {
 				stats.incSuccess()
 			}
+			enqueueResponse(ch, &record{resp, addr, clientID, isPoll})
 		}
 	}
 }
@@ -585,10 +582,44 @@ func encodeResponsePayload(rec *record, data []byte, domain dns.Name) error {
 	return nil
 }
 
-// sendLoop repeatedly receives records from ch. Those that represent an error
-// response, it sends on the network immediately. Those that represent a
-// response capable of carrying data, it packs full of as many packets as will
-// fit while keeping the total size under maxEncodedPayload, then sends it.
+func writeResponse(dnsConn net.PacketConn, rec *record, writeMu *sync.Mutex) {
+	buf, err := rec.Resp.WireFormat()
+	if err != nil {
+		log.Errorf("failed to serialize DNS response: %v", err)
+		return
+	}
+	if len(buf) > maxUDPPayload {
+		log.Warnf("response too large (%d bytes), sending TC=1 truncated response", len(buf))
+		rec.Resp.Flags |= 0x0200 // TC = 1
+		rec.Resp.Answer = nil
+		rec.Resp.Authority = nil
+		buf, err = rec.Resp.WireFormat()
+		if err != nil {
+			log.Errorf("failed to serialize truncated DNS response: %v", err)
+			return
+		}
+		if len(buf) > maxUDPPayload {
+			rec.Resp.Additional = nil
+			buf, err = rec.Resp.WireFormat()
+			if err != nil {
+				log.Errorf("failed to serialize minimal truncated DNS response: %v", err)
+				return
+			}
+			if len(buf) > maxUDPPayload {
+				log.Errorf("minimal truncated DNS response still exceeds UDP payload limit: %d > %d", len(buf), maxUDPPayload)
+				return
+			}
+		}
+	}
+
+	writeMu.Lock()
+	_, err = dnsConn.WriteTo(buf, rec.Addr)
+	writeMu.Unlock()
+	if err != nil {
+		log.Warnf("failed to send DNS response to %s: %v", rec.Addr, err)
+	}
+}
+
 func sendLoop(dnsConn net.PacketConn, ttConn *turbotunnel.QueuePacketConn, ch <-chan *record, maxEncodedPayload int, responseDelay time.Duration, domain dns.Name, writeMu *sync.Mutex) error {
 	var nextRec *record
 	for {
@@ -599,153 +630,75 @@ func sendLoop(dnsConn net.PacketConn, ttConn *turbotunnel.QueuePacketConn, ch <-
 			var ok bool
 			rec, ok = <-ch
 			if !ok {
-				break
+				return nil
 			}
 		}
 
-		if rec.Resp.Rcode() == dns.RcodeNoError && len(rec.Resp.Question) == 1 {
-			// If it's a non-error response, we can fill the Answer
-			// section with downstream packets.
+	if rec.Resp.Rcode() == dns.RcodeNoError && len(rec.Resp.Question) == 1 {
+		rec.Resp.Answer = []dns.RR{
+			{
+				Name:  rec.Resp.Question[0].Name,
+				Type:  rec.Resp.Question[0].Type,
+				Class: rec.Resp.Question[0].Class,
+				TTL:   responseTTL,
+				Data:  nil,
+			},
+		}
 
-			// Any changes to how responses are built need to happen
-			// also in computeMaxEncodedPayload.
-			rec.Resp.Answer = []dns.RR{
-				{
-					Name:  rec.Resp.Question[0].Name,
-					Type:  rec.Resp.Question[0].Type,
-					Class: rec.Resp.Question[0].Class,
-					TTL:   responseTTL,
-					Data:  nil, // will be filled in below
-				},
-			}
+		var payload bytes.Buffer
+		limit := maxEncodedPayload
+		waitDelay := responseDelay
+		if rec.IsPoll {
+			waitDelay = 0
+		}
 
-			var payload bytes.Buffer
-			limit := maxEncodedPayload
-			// We loop and bundle as many packets from OutgoingQueue
-			// into the response as will fit. Any packet that would
-			// overflow the capacity of the DNS response, we stash
-			// to be bundled into a future response.
-			waitDelay := responseDelay
-			if rec.IsPoll {
-				waitDelay = 0
-			}
-			timer := time.NewTimer(waitDelay)
-			for {
-				var p []byte
-				unstash := ttConn.Unstash(rec.ClientID)
-				outgoing := ttConn.OutgoingQueue(rec.ClientID)
-				// Prioritize taking a packet first from the
-				// stash, then from the outgoing queue, then
-				// finally check for the expiration of the timer
-				// or for a receive on ch (indicating a new
-				// query that we must respond to).
+		timer := time.NewTimer(waitDelay)
+		for {
+			var p []byte
+			unstash := ttConn.Unstash(rec.ClientID)
+			outgoing := ttConn.OutgoingQueue(rec.ClientID)
+			select {
+			case p = <-unstash:
+			default:
 				select {
 				case p = <-unstash:
+				case p = <-outgoing:
 				default:
 					select {
 					case p = <-unstash:
 					case p = <-outgoing:
-					default:
-						select {
-						case p = <-unstash:
-						case p = <-outgoing:
-						case <-timer.C:
-						case nextRec = <-ch:
-						}
+					case <-timer.C:
+					case nextRec = <-ch:
 					}
 				}
-				// We wait for the first packet in a bundle
-				// only. The second and later packets must be
-				// immediately available or they will be omitted
-				// from this bundle.
-				timer.Reset(0)
-
-				if len(p) == 0 {
-					// timer expired or receive on ch, we
-					// are done with this response.
-					break
-				}
-
-				limit -= 2 + len(p)
-				if payload.Len() == 0 {
-					// No packet length check for the first
-					// packet; if it's too large, we allow
-					// it to be truncated and dropped by the
-					// receiver.
-				} else if limit < 0 {
-					// Stash this packet to send in the next
-					// response.
-					ttConn.Stash(p, rec.ClientID)
-					break
-				}
-				if int(uint16(len(p))) != len(p) {
-					panic(len(p))
-				}
-				binary.Write(&payload, binary.BigEndian, uint16(len(p)))
-				payload.Write(p)
 			}
-			timer.Stop()
+			timer.Reset(0)
 
-			if err := encodeResponsePayload(rec, payload.Bytes(), domain); err != nil {
-				log.Errorf("failed to encode downstream payload: %v", err)
-				continue
+			if len(p) == 0 {
+				break
 			}
+
+			limit -= 2 + len(p)
+			if payload.Len() > 0 && limit < 0 {
+				ttConn.Stash(p, rec.ClientID)
+				break
+			}
+			if int(uint16(len(p))) != len(p) {
+				panic(len(p))
+			}
+			binary.Write(&payload, binary.BigEndian, uint16(len(p)))
+			payload.Write(p)
 		}
+		timer.Stop()
 
-		buf, err := rec.Resp.WireFormat()
-		if err != nil {
-			log.Errorf("failed to serialize DNS response: %v", err)
-			continue
-		}
-		if len(buf) > maxUDPPayload {
-			log.Warnf("response too large (%d bytes), sending TC=1 truncated response", len(buf))
-			// Never slice a serialized DNS packet at an arbitrary byte boundary:
-			// that can leave a malformed message that recursive resolvers convert
-			// into SERVFAIL. Rebuild a structurally valid truncated response
-			// instead.
-			rec.Resp.Flags |= 0x0200 // TC = 1
-			rec.Resp.Answer = nil
-			rec.Resp.Authority = nil
-			buf, err = rec.Resp.WireFormat()
-			if err != nil {
-				log.Errorf("failed to serialize truncated DNS response: %v", err)
-				continue
-			}
-			if len(buf) > maxUDPPayload {
-				// As a last resort, drop OPT as well and return the smallest
-				// valid truncated response we can build.
-				rec.Resp.Additional = nil
-				buf, err = rec.Resp.WireFormat()
-				if err != nil {
-					log.Errorf("failed to serialize minimal truncated DNS response: %v", err)
-					continue
-				}
-				if len(buf) > maxUDPPayload {
-					log.Errorf("minimal truncated DNS response still exceeds UDP payload limit: %d > %d", len(buf), maxUDPPayload)
-					continue
-				}
-			}
-		}
-
-		// Now we actually send the message as a UDP packet.
-		// Serialize writes across workers to avoid concurrent WriteTo
-		// corruption on the shared UDP socket.
-		writeMu.Lock()
-		_, err = dnsConn.WriteTo(buf, rec.Addr)
-		writeMu.Unlock()
-		if err != nil {
-			if errors.Is(err, net.ErrClosed) {
-				return err
-			}
-			if err, ok := err.(net.Error); ok && err.Temporary() {
-				log.Warnf("failed to send DNS response to %s: %v", rec.Addr, err)
-			} else {
-				log.Warnf("failed to send DNS response to %s: %v", rec.Addr, err)
-			}
+		if err := encodeResponsePayload(rec, payload.Bytes(), domain); err != nil {
+			log.Errorf("failed to encode downstream payload: %v", err)
 			continue
 		}
 	}
-	return nil
+
+	writeResponse(dnsConn, rec, writeMu)
+	}
 }
 
 // computeMaxEncodedPayload computes the maximum amount of downstream single-RR
@@ -992,12 +945,11 @@ func run(domain dns.Name, upstream string, dnsConn net.PacketConn, idleTimeout t
 		responseDelay = defaultResponseDelay
 	}
 
+	var writeMu sync.Mutex
 	ch := make(chan *record, responseQueueSize)
 	shutdown := make(chan struct{})
 	defer close(ch)
 	defer close(shutdown)
-
-	var writeMu sync.Mutex
 
 	stats := &ServerStats{}
 	go func() {
@@ -1226,11 +1178,6 @@ Example:
 		fmt.Fprintf(os.Stderr, "invalid -queue-overflow: %v\n", err)
 		os.Exit(1)
 	}
-	effectiveResponseQueueSize := responseQueueSize
-	if effectiveResponseQueueSize == 0 {
-		effectiveResponseQueueSize = queueSize
-	}
-
 	if clientIDSize <= 0 {
 		fmt.Fprintf(os.Stderr, "-clientid-size must be positive\n")
 		os.Exit(1)
