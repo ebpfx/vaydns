@@ -112,7 +112,7 @@ func (s *ServerStats) log() {
 	total := atomic.LoadUint64(&s.total)
 	success := atomic.LoadUint64(&s.success)
 	responseDropped := atomic.LoadUint64(&s.responseDropped)
-	log.Debugf("queries: %d total, %d answered, %d dropped (response queue full)", total, success, responseDropped)
+	log.Infof("queries: %d total, %d answered, %d dropped (response queue full)", total, success, responseDropped)
 }
 
 type idleDeadlineConn struct {
@@ -464,18 +464,12 @@ type record struct {
 	Resp     *dns.Message
 	Addr     net.Addr
 	ClientID turbotunnel.ClientID
+	IsPoll   bool
 }
 
 func enqueueResponse(ch chan *record, rec *record, stats *ServerStats) bool {
-	select {
-	case ch <- rec:
-		return true
-	default:
-		if stats != nil {
-			stats.incResponseDropped()
-		}
-		return false
-	}
+	ch <- rec
+	return true
 }
 
 // recvLoop repeatedly calls dnsConn.ReadFrom, extracts the packets contained in
@@ -505,6 +499,7 @@ func recvLoop(domain dns.Name, dnsConn net.PacketConn, ttConn *turbotunnel.Queue
 
 		resp, payload := responseFor(&query, domain, addr)
 		clientID, packet, err := decodeUpstreamQuery(payload, wireConfig.ClientIDSize)
+		isPoll := err == nil && packet == nil
 		if err != nil {
 			// Payload is not long enough to contain a ClientID.
 			if errors.Is(err, io.ErrUnexpectedEOF) && len(payload) < wireConfig.ClientIDSize && resp != nil && resp.Rcode() == dns.RcodeNoError {
@@ -517,7 +512,7 @@ func recvLoop(domain dns.Name, dnsConn net.PacketConn, ttConn *turbotunnel.Queue
 		}
 		// If a response is called for, pass it to sendLoop via the channel.
 		if resp != nil {
-			if enqueueResponse(ch, &record{resp, addr, clientID}, stats) && resp.Rcode() == dns.RcodeNoError {
+			if enqueueResponse(ch, &record{resp, addr, clientID, isPoll}, stats) && resp.Rcode() == dns.RcodeNoError {
 				stats.incSuccess()
 			}
 		}
@@ -630,7 +625,11 @@ func sendLoop(dnsConn net.PacketConn, ttConn *turbotunnel.QueuePacketConn, ch <-
 			// into the response as will fit. Any packet that would
 			// overflow the capacity of the DNS response, we stash
 			// to be bundled into a future response.
-			timer := time.NewTimer(responseDelay)
+			waitDelay := responseDelay
+			if rec.IsPoll {
+				waitDelay = 0
+			}
+			timer := time.NewTimer(waitDelay)
 			for {
 				var p []byte
 				unstash := ttConn.Unstash(rec.ClientID)
@@ -698,12 +697,34 @@ func sendLoop(dnsConn net.PacketConn, ttConn *turbotunnel.QueuePacketConn, ch <-
 			log.Errorf("failed to serialize DNS response: %v", err)
 			continue
 		}
-		// Truncate if necessary.
-		// https://tools.ietf.org/html/rfc1035#section-4.1.1
 		if len(buf) > maxUDPPayload {
-			log.Warnf("response too large (%d bytes), truncating to %d", len(buf), maxUDPPayload)
-			buf = buf[:maxUDPPayload]
-			buf[2] |= 0x02 // TC = 1
+			log.Warnf("response too large (%d bytes), sending TC=1 truncated response", len(buf))
+			// Never slice a serialized DNS packet at an arbitrary byte boundary:
+			// that can leave a malformed message that recursive resolvers convert
+			// into SERVFAIL. Rebuild a structurally valid truncated response
+			// instead.
+			rec.Resp.Flags |= 0x0200 // TC = 1
+			rec.Resp.Answer = nil
+			rec.Resp.Authority = nil
+			buf, err = rec.Resp.WireFormat()
+			if err != nil {
+				log.Errorf("failed to serialize truncated DNS response: %v", err)
+				continue
+			}
+			if len(buf) > maxUDPPayload {
+				// As a last resort, drop OPT as well and return the smallest
+				// valid truncated response we can build.
+				rec.Resp.Additional = nil
+				buf, err = rec.Resp.WireFormat()
+				if err != nil {
+					log.Errorf("failed to serialize minimal truncated DNS response: %v", err)
+					continue
+				}
+				if len(buf) > maxUDPPayload {
+					log.Errorf("minimal truncated DNS response still exceeds UDP payload limit: %d > %d", len(buf), maxUDPPayload)
+					continue
+				}
+			}
 		}
 
 		// Now we actually send the message as a UDP packet.
