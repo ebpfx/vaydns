@@ -1,6 +1,7 @@
 package turbotunnel
 
 import (
+	"fmt"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -163,9 +164,11 @@ func (c *QueuePacketConn) WriteTo(p []byte, addr net.Addr) (int, error) {
 			record.sendMu.Unlock()
 			return len(buf), nil
 		default:
-			// Drop the outgoing packet if the send queue is full.
+			// Return an error if the send queue is full. This allows the
+			// reliability layer (e.g. KCP) to see the backpressure and
+			// slow down, rather than assuming the packet was sent.
 			record.sendMu.Unlock()
-			return len(buf), nil
+			return 0, fmt.Errorf("queue full")
 		}
 	}
 }

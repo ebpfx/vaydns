@@ -692,11 +692,20 @@ func sendLoop(dnsConn net.PacketConn, ttConn *turbotunnel.QueuePacketConn, ch <-
 				case p = <-unstash:
 				case p = <-outgoing:
 				default:
+					// If there is another client waiting in the queue,
+					// don't wait for more data for the current client.
+					// This prevents worker starvation.
 					select {
-					case p = <-unstash:
-					case p = <-outgoing:
-					case <-timer.C:
 					case nextRec = <-ch:
+						// Got another client's query; finish this one.
+					default:
+						// No other clients waiting; we can afford to wait.
+						select {
+						case p = <-unstash:
+						case p = <-outgoing:
+						case <-timer.C:
+						case nextRec = <-ch:
+						}
 					}
 				}
 			}
