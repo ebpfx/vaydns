@@ -161,10 +161,11 @@ type Tunnel struct {
 	ActivePollDelay          time.Duration                 // default: 800ms
 	PollMaxDelay             time.Duration                 // default: 5s
 	UDPTransportStaleTimeout time.Duration                 // default: 20s
-	OpenStreamFailureLimit   int                           // default: 10 consecutive idle failures
+	OpenStreamFailureLimit   int                           // default: 10 consecutive stream-open failures
 
 	// internal state
 	stateMu       sync.Mutex
+	rebuildMu     sync.Mutex
 	wireConfig    turbotunnel.WireConfig
 	dnsDomain     dns.Name
 	forgedStats   *ForgedStats
@@ -173,7 +174,16 @@ type Tunnel struct {
 	kcpConn       *kcp.UDPSession
 	smuxSession   *smux.Session
 	remoteAddr    net.Addr
-	busyStreams atomic.Int32
+	busyStreams   atomic.Int32
+}
+
+type tunnelStack struct {
+	remoteAddr    net.Addr
+	forgedStats   *ForgedStats
+	resolverConn  net.PacketConn
+	dnsPacketConn *DNSPacketConn
+	kcpConn       *kcp.UDPSession
+	smuxSession   *smux.Session
 }
 
 // NewTunnel creates a Tunnel with the given resolver and server configuration.
@@ -357,6 +367,158 @@ func (t *Tunnel) effectiveMTU() (int, error) {
 	return mtu, nil
 }
 
+func closeTunnelStack(stack *tunnelStack) {
+	if stack == nil {
+		return
+	}
+	if stack.smuxSession != nil {
+		stack.smuxSession.Close()
+	}
+	if stack.kcpConn != nil {
+		log.Debugf("[%08x] session closed", stack.kcpConn.GetConv())
+		stack.kcpConn.Close()
+	}
+	if stack.dnsPacketConn != nil {
+		stack.dnsPacketConn.Close()
+	}
+	if stack.resolverConn != nil {
+		stack.resolverConn.Close()
+	}
+}
+
+func (t *Tunnel) detachStackLocked() *tunnelStack {
+	stack := &tunnelStack{
+		remoteAddr:    t.remoteAddr,
+		forgedStats:   t.forgedStats,
+		resolverConn:  t.resolverConn,
+		dnsPacketConn: t.dnsPacketConn,
+		kcpConn:       t.kcpConn,
+		smuxSession:   t.smuxSession,
+	}
+	t.remoteAddr = nil
+	t.forgedStats = nil
+	t.resolverConn = nil
+	t.dnsPacketConn = nil
+	t.kcpConn = nil
+	t.smuxSession = nil
+	return stack
+}
+
+func (t *Tunnel) replaceStackLocked(stack *tunnelStack) *tunnelStack {
+	old := t.detachStackLocked()
+	if stack == nil {
+		return old
+	}
+	t.remoteAddr = stack.remoteAddr
+	t.forgedStats = stack.forgedStats
+	t.resolverConn = stack.resolverConn
+	t.dnsPacketConn = stack.dnsPacketConn
+	t.kcpConn = stack.kcpConn
+	t.smuxSession = stack.smuxSession
+	return old
+}
+
+func (t *Tunnel) snapshotStack() *tunnelStack {
+	t.stateMu.Lock()
+	defer t.stateMu.Unlock()
+	if t.smuxSession == nil && t.kcpConn == nil && t.dnsPacketConn == nil && t.resolverConn == nil {
+		return nil
+	}
+	return &tunnelStack{
+		remoteAddr:    t.remoteAddr,
+		forgedStats:   t.forgedStats,
+		resolverConn:  t.resolverConn,
+		dnsPacketConn: t.dnsPacketConn,
+		kcpConn:       t.kcpConn,
+		smuxSession:   t.smuxSession,
+	}
+}
+
+func (t *Tunnel) buildFullStack(mtu int, domain dns.Name) (*tunnelStack, error) {
+	stack := &tunnelStack{}
+
+	addr, err := net.ResolveUDPAddr("udp", t.Resolver.ResolverAddr)
+	if err != nil {
+		return nil, err
+	}
+	stack.remoteAddr = addr
+
+	if t.Resolver.UDPSharedSocket {
+		lc := net.ListenConfig{Control: t.Resolver.DialerControl}
+		conn, err := lc.ListenPacket(context.Background(), "udp", ":0")
+		if err != nil {
+			return nil, err
+		}
+		stack.resolverConn = conn
+	} else {
+		workers := t.Resolver.UDPWorkers
+		if workers <= 0 {
+			workers = DefaultUDPWorkers
+		}
+		timeout := t.Resolver.UDPTimeout
+		if timeout <= 0 {
+			timeout = DefaultUDPResponseTimeout
+		}
+		conn, forgedStats, err := NewUDPPacketConn(addr, t.Resolver.DialerControl, workers, timeout, !t.Resolver.UDPAcceptErrors, t.effectivePacketQueueSize(), t.effectiveQueueOverflowMode())
+		if err != nil {
+			return nil, err
+		}
+		stack.forgedStats = forgedStats
+		stack.resolverConn = conn
+	}
+
+	var rateLimiter *RateLimiter
+	if t.TunnelServer.RPS > 0 {
+		rateLimiter = NewRateLimiter(t.TunnelServer.RPS)
+	}
+	stack.dnsPacketConn = newDNSPacketConn(
+		stack.resolverConn,
+		stack.remoteAddr,
+		domain,
+		rateLimiter,
+		t.TunnelServer.effectiveMaxQnameLen(),
+		t.TunnelServer.MaxNumLabels,
+		t.wireConfig,
+		stack.forgedStats,
+		t.TunnelServer.effectiveRRType(),
+		&t.busyStreams,
+		t.PollDelay,
+		t.ActivePollDelay,
+		t.PollMaxDelay,
+		t.effectivePacketQueueSize(),
+		t.effectiveQueueOverflowMode(),
+	)
+
+	conn, err := kcp.NewConn2(stack.remoteAddr, nil, 0, 0, stack.dnsPacketConn)
+	if err != nil {
+		closeTunnelStack(stack)
+		return nil, fmt.Errorf("opening KCP conn: %v", err)
+	}
+	log.Infof("[%08x] tunnel session established", conn.GetConv())
+	conn.SetStreamMode(true)
+	conn.SetNoDelay(0, 0, 0, 1)
+	conn.SetWindowSize(t.effectiveKCPWindowSize(), t.effectiveKCPWindowSize())
+	if rc := conn.SetMtu(mtu); !rc {
+		conn.Close()
+		closeTunnelStack(stack)
+		return nil, fmt.Errorf("failed to set KCP MTU to %d", mtu)
+	}
+	stack.kcpConn = conn
+
+	smuxConfig := smux.DefaultConfig()
+	smuxConfig.KeepAliveInterval = t.KeepAlive
+	smuxConfig.KeepAliveTimeout = t.IdleTimeout
+	smuxConfig.MaxStreamBuffer, smuxConfig.MaxReceiveBuffer = t.effectiveSmuxBuffers(mtu)
+	sess, err := smux.Client(conn, smuxConfig)
+	if err != nil {
+		closeTunnelStack(stack)
+		return nil, fmt.Errorf("opening smux session: %v", err)
+	}
+	stack.smuxSession = sess
+
+	return stack, nil
+}
+
 // InitiateKCPConn opens a KCP connection over the DNS packet connection.
 // If mtu is 0, it is auto-computed from the domain and QNAME constraints.
 func (t *Tunnel) InitiateKCPConn(mtu int) error {
@@ -462,10 +624,13 @@ func (t *Tunnel) OpenStream() (net.Conn, error) {
 
 	var lastErr error
 	for attempt := 0; attempt < 2; attempt++ {
-		t.stateMu.Lock()
-		sess := t.smuxSession
-		conn := t.kcpConn
-		t.stateMu.Unlock()
+		stack := t.snapshotStack()
+		var sess *smux.Session
+		var conn *kcp.UDPSession
+		if stack != nil {
+			sess = stack.smuxSession
+			conn = stack.kcpConn
+		}
 
 		if sess == nil || conn == nil || sess.IsClosed() {
 			if err := t.rebuildFullStack(); err != nil {
@@ -487,7 +652,6 @@ func (t *Tunnel) OpenStream() (net.Conn, error) {
 			break
 		}
 		log.Warnf("[%08x] stream open failed, rebuilding full transport stack: %v", conv, err)
-		t.closeSessionLayers()
 		if rebuildErr := t.rebuildFullStack(); rebuildErr != nil {
 			return nil, fmt.Errorf("session %08x opening stream failed: %v; rebuild failed: %w", conv, err, rebuildErr)
 		}
@@ -541,61 +705,9 @@ func (t *Tunnel) Handle(lconn *net.TCPConn) error {
 // Close tears down the tunnel and all its layers.
 func (t *Tunnel) Close() error {
 	t.stateMu.Lock()
-	defer t.stateMu.Unlock()
-	t.closeSessionLayersLocked()
-	t.closeTransportLayersLocked()
-	return nil
-}
-
-func (t *Tunnel) closeSessionLayers() {
-	t.stateMu.Lock()
-	defer t.stateMu.Unlock()
-	t.closeSessionLayersLocked()
-}
-
-func (t *Tunnel) closeSessionLayersLocked() {
-	if t.smuxSession != nil {
-		t.smuxSession.Close()
-		t.smuxSession = nil
-	}
-	if t.kcpConn != nil {
-		log.Debugf("[%08x] session closed", t.kcpConn.GetConv())
-		t.kcpConn.Close()
-		t.kcpConn = nil
-	}
-}
-
-// closeTransportLayers tears down the DNS and resolver transport layers.
-// Safe to call multiple times.
-func (t *Tunnel) closeTransportLayers() {
-	t.stateMu.Lock()
-	defer t.stateMu.Unlock()
-	t.closeTransportLayersLocked()
-}
-
-func (t *Tunnel) closeTransportLayersLocked() {
-	if t.dnsPacketConn != nil {
-		t.dnsPacketConn.Close()
-		t.dnsPacketConn = nil
-	}
-	if t.resolverConn != nil {
-		t.resolverConn.Close()
-		t.resolverConn = nil
-	}
-	t.forgedStats = nil
-}
-
-// resetTransportLayers tears down existing transport layers and creates fresh
-// ones. Used during reconnect to ensure a clean transport stack.
-func (t *Tunnel) resetTransportLayers() error {
-	t.closeTransportLayers()
-	if err := t.InitiateResolverConnection(); err != nil {
-		return fmt.Errorf("resolver connection: %w", err)
-	}
-	if err := t.InitiateDNSPacketConn(t.TunnelServer.Addr); err != nil {
-		t.closeTransportLayers()
-		return fmt.Errorf("DNS packet conn: %w", err)
-	}
+	stack := t.detachStackLocked()
+	t.stateMu.Unlock()
+	closeTunnelStack(stack)
 	return nil
 }
 
@@ -606,29 +718,20 @@ func (t *Tunnel) rebuildFullStack() error {
 		return err
 	}
 
+	t.rebuildMu.Lock()
+	defer t.rebuildMu.Unlock()
+
+	stack, err := t.buildFullStack(mtu, t.effectiveDNSDomain())
+	if err != nil {
+		return err
+	}
+
 	t.stateMu.Lock()
-	defer t.stateMu.Unlock()
+	old := t.replaceStackLocked(stack)
+	t.TunnelServer.MTU = mtu
+	t.stateMu.Unlock()
 
-	t.closeSessionLayersLocked()
-	t.closeTransportLayersLocked()
-
-	if err := t.InitiateResolverConnection(); err != nil {
-		return fmt.Errorf("resolver connection: %w", err)
-	}
-	if err := t.InitiateDNSPacketConn(t.effectiveDNSDomain()); err != nil {
-		t.closeTransportLayersLocked()
-		return fmt.Errorf("DNS packet conn: %w", err)
-	}
-	if err := t.InitiateKCPConn(mtu); err != nil {
-		t.closeTransportLayersLocked()
-		return err
-	}
-	if err := t.InitiateSmuxSession(); err != nil {
-		t.closeSessionLayersLocked()
-		t.closeTransportLayersLocked()
-		return err
-	}
-
+	closeTunnelStack(old)
 	return nil
 }
 
@@ -636,10 +739,11 @@ func (t *Tunnel) udpTransportStaleAge(requireTraffic bool) time.Duration {
 	if !requireTraffic || t.UDPTransportStaleTimeout <= 0 {
 		return 0
 	}
-	if t.dnsPacketConn == nil {
+	stack := t.snapshotStack()
+	if stack == nil || stack.dnsPacketConn == nil {
 		return 0
 	}
-	lastSuccess := t.dnsPacketConn.lastSuccessTime()
+	lastSuccess := stack.dnsPacketConn.lastSuccessTime()
 	if lastSuccess.IsZero() {
 		return 0
 	}
@@ -686,11 +790,13 @@ func (t *Tunnel) ListenAndServe(listenAddr string) error {
 			}
 		}
 
-		t.stateMu.Lock()
-		conn := t.kcpConn
-		sess := t.smuxSession
-		transportErrCh := t.dnsPacketConn.TransportErrors()
-		t.stateMu.Unlock()
+		stack := t.snapshotStack()
+		if stack == nil || stack.kcpConn == nil || stack.smuxSession == nil || stack.dnsPacketConn == nil {
+			continue
+		}
+		conn := stack.kcpConn
+		sess := stack.smuxSession
+		transportErrCh := stack.dnsPacketConn.TransportErrors()
 		sessDone := sess.CloseChan()
 		conv := conn.GetConv()
 		var openFailCount atomic.Int32
@@ -716,9 +822,10 @@ func (t *Tunnel) ListenAndServe(listenAddr string) error {
 					}
 					continue
 				}
-				sess.Close()
-				conn.Close()
-				t.closeTransportLayers()
+				t.stateMu.Lock()
+				old := t.detachStackLocked()
+				t.stateMu.Unlock()
+				closeTunnelStack(old)
 				return err
 			}
 
@@ -749,41 +856,11 @@ func (t *Tunnel) ListenAndServe(listenAddr string) error {
 		}
 
 		log.Warnf("[%08x] session closed, reconnecting", conv)
-		t.closeSessionLayers()
-		t.closeTransportLayers()
+		t.stateMu.Lock()
+		old := t.detachStackLocked()
+		t.stateMu.Unlock()
+		closeTunnelStack(old)
 	}
-}
-
-// createSession creates a KCP+smux session (used by ListenAndServe).
-func (t *Tunnel) createSession(mtu int) (*kcp.UDPSession, *smux.Session, error) {
-	conn, err := kcp.NewConn2(t.remoteAddr, nil, 0, 0, t.dnsPacketConn)
-	if err != nil {
-		return nil, nil, fmt.Errorf("opening KCP conn: %v", err)
-	}
-	conn.SetStreamMode(true)
-	conn.SetNoDelay(0, 0, 0, 1)
-	conn.SetWindowSize(t.effectiveKCPWindowSize(), t.effectiveKCPWindowSize())
-	if rc := conn.SetMtu(mtu); !rc {
-		conn.Close()
-		return nil, nil, fmt.Errorf("failed to set KCP MTU to %d", mtu)
-	}
-
-	smuxConfig := smux.DefaultConfig()
-	smuxConfig.KeepAliveInterval = t.KeepAlive
-	smuxConfig.KeepAliveTimeout = t.IdleTimeout
-	smuxConfig.MaxStreamBuffer, smuxConfig.MaxReceiveBuffer = t.effectiveSmuxBuffers(mtu)
-	sess, err := smux.Client(conn, smuxConfig)
-	if err != nil {
-		conn.Close()
-		return nil, nil, fmt.Errorf("opening smux session: %v", err)
-	}
-
-	t.stateMu.Lock()
-	t.kcpConn = conn
-	t.smuxSession = sess
-	t.stateMu.Unlock()
-
-	return conn, sess, nil
 }
 
 // handleConn forwards a single TCP connection through the tunnel session.
