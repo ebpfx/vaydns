@@ -48,6 +48,10 @@ func main() {
 	var queueSize int
 	var kcpWindowSize int
 	var queueOverflowStr string
+	var kcpNoDelay int
+	var kcpInterval int
+	var kcpResend int
+	var kcpNC int
 
 	flag.Usage = func() {
 		fmt.Fprintf(flag.CommandLine.Output(), `Usage:
@@ -97,6 +101,10 @@ Examples:
 	flag.IntVar(&queueSize, "queue-size", turbotunnel.QueueSize, "packet queue size for transport and DNS layers")
 	flag.IntVar(&kcpWindowSize, "kcp-window-size", 0, "KCP send/receive window size in packets (0 = queue-size/2)")
 	flag.StringVar(&queueOverflowStr, "queue-overflow", string(turbotunnel.DefaultQueueOverflowMode), "queue overflow behavior: drop or block")
+	flag.IntVar(&kcpNoDelay, "kcp-nodelay", 1, "KCP nodelay mode (0 = disabled, 1 = enabled)")
+	flag.IntVar(&kcpInterval, "kcp-interval", 20, "KCP internal update interval in milliseconds")
+	flag.IntVar(&kcpResend, "kcp-resend", 2, "KCP fast retransmit mode (0 = disabled, 2 = enabled)")
+	flag.IntVar(&kcpNC, "kcp-nc", 1, "KCP congestion control (0 = enabled, 1 = disabled)")
 
 	var logLevel string
 	flag.StringVar(&logLevel, "log-level", "info", "log level (debug, info, warning, error)")
@@ -308,6 +316,10 @@ Examples:
 	tunnel.PacketQueueSize = queueSize
 	tunnel.KCPWindowSize = kcpWindowSize
 	tunnel.QueueOverflowMode = queueOverflowMode
+	tunnel.KCPNoDelay = kcpNoDelay
+	tunnel.KCPInterval = kcpInterval
+	tunnel.KCPResend = kcpResend
+	tunnel.KCPNC = kcpNC
 
 	if rpsLimit > 0 {
 		log.Infof("DNS query rate limited to %.1f queries/sec", rpsLimit)

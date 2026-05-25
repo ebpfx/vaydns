@@ -160,6 +160,10 @@ type Tunnel struct {
 	PacketQueueSize          int                           // default: QueueSize (512)
 	KCPWindowSize            int                           // default: PacketQueueSize/2
 	QueueOverflowMode        turbotunnel.QueueOverflowMode // default: drop
+	KCPNoDelay               int                           // default: 1
+	KCPInterval              int                           // default: 20
+	KCPResend                int                           // default: 2
+	KCPNC                    int                           // default: 1
 	PollDelay                time.Duration                 // default: 500ms
 	ActivePollDelay          time.Duration                 // default: 200ms
 	PollMaxDelay             time.Duration                 // default: 1s
@@ -233,6 +237,12 @@ func (t *Tunnel) applyDefaults() {
 	}
 	if t.OpenStreamFailureLimit == 0 {
 		t.OpenStreamFailureLimit = DefaultOpenStreamFailureLimit
+	}
+	if t.KCPNoDelay == 0 && t.KCPInterval == 0 && t.KCPResend == 0 && t.KCPNC == 0 {
+		t.KCPNoDelay = 1
+		t.KCPInterval = 20
+		t.KCPResend = 2
+		t.KCPNC = 1
 	}
 }
 
@@ -485,7 +495,7 @@ func (t *Tunnel) buildFullStack(mtu int, domain dns.Name) (*tunnelStack, error) 
 	}
 	log.Infof("[%08x] tunnel session established", conn.GetConv())
 	conn.SetStreamMode(true)
-	conn.SetNoDelay(0, 0, 0, 1)
+	conn.SetNoDelay(t.KCPNoDelay, t.KCPInterval, t.KCPResend, t.KCPNC)
 	conn.SetWindowSize(t.effectiveKCPWindowSize(), t.effectiveKCPWindowSize())
 	if rc := conn.SetMtu(mtu); !rc {
 		conn.Close()
@@ -528,7 +538,7 @@ func (t *Tunnel) InitiateKCPConn(mtu int) error {
 	}
 	log.Infof("[%08x] tunnel session established", conn.GetConv())
 	conn.SetStreamMode(true)
-	conn.SetNoDelay(0, 0, 0, 1)
+	conn.SetNoDelay(t.KCPNoDelay, t.KCPInterval, t.KCPResend, t.KCPNC)
 	conn.SetWindowSize(t.effectiveKCPWindowSize(), t.effectiveKCPWindowSize())
 	if rc := conn.SetMtu(mtu); !rc {
 		conn.Close()
