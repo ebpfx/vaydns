@@ -53,7 +53,7 @@ const (
 	// low enough for interactive traffic. Long batching delays are acceptable
 	// for bulk transfer but make chat and proxy workloads feel broken.
 	defaultResponseDelay     = 500 * time.Millisecond
-	defaultResponseWorkers   = 3
+	defaultResponseWorkers   = 8
 	defaultResponseQueueSize = 0
 
 	// Default TTL for Answer resource records.
@@ -358,7 +358,7 @@ func responseFor(query *dns.Message, domain dns.Name, addr net.Addr) (*dns.Messa
 			// "If a query message with more than one OPT RR is
 			// received, a FORMERR (RCODE=1) MUST be returned."
 			resp.Flags |= dns.RcodeFormatError
-			log.Debugf("rejected query from %s: more than one OPT RR", addr)
+			log.Infof("rejected query from %s: more than one OPT RR", addr)
 			return resp, nil
 		}
 		resp.Additional = append(resp.Additional, dns.RR{
@@ -378,7 +378,7 @@ func responseFor(query *dns.Message, domain dns.Name, addr net.Addr) (*dns.Messa
 			// RCODE=BADVERS."
 			resp.Flags |= dns.ExtendedRcodeBadVers & 0xf
 			additional.TTL = (dns.ExtendedRcodeBadVers >> 4) << 24
-			log.Debugf("rejected query from %s: unsupported EDNS version %d", addr, version)
+			log.Infof("rejected query from %s: unsupported EDNS version %d", addr, version)
 			return resp, nil
 		}
 
@@ -395,7 +395,7 @@ func responseFor(query *dns.Message, domain dns.Name, addr net.Addr) (*dns.Messa
 	// There must be exactly one question.
 	if len(query.Question) != 1 {
 		resp.Flags |= dns.RcodeFormatError
-		log.Debugf("rejected query from %s: expected 1 question, got %d", addr, len(query.Question))
+		log.Infof("rejected query from %s: expected 1 question, got %d", addr, len(query.Question))
 		return resp, nil
 	}
 	question := query.Question[0]
@@ -407,7 +407,7 @@ func responseFor(query *dns.Message, domain dns.Name, addr net.Addr) (*dns.Messa
 	if !ok {
 		// Not a name we are authoritative for.
 		resp.Flags |= dns.RcodeNameError
-		log.Debugf("rejected query from %s: not authoritative for %s", addr, question.Name)
+		log.Infof("rejected query from %s: not authoritative for %s", addr, question.Name)
 		return resp, nil
 	}
 	resp.Flags |= 0x0400 // AA = 1
@@ -415,7 +415,7 @@ func responseFor(query *dns.Message, domain dns.Name, addr net.Addr) (*dns.Messa
 	if query.Opcode() != 0 {
 		// We don't support OPCODE != QUERY.
 		resp.Flags |= dns.RcodeNotImplemented
-		log.Debugf("rejected query from %s: unsupported opcode %d", addr, query.Opcode())
+		log.Infof("rejected query from %s: unsupported opcode %d", addr, query.Opcode())
 		return resp, nil
 	}
 
@@ -435,7 +435,7 @@ func responseFor(query *dns.Message, domain dns.Name, addr net.Addr) (*dns.Messa
 	if err != nil {
 		// Base32 error, make like the name doesn't exist.
 		resp.Flags |= dns.RcodeNameError
-		log.Debugf("rejected query from %s: payload is not valid base32: %v", addr, err)
+		log.Infof("rejected query from %s: payload is not valid base32: %v", addr, err)
 		return resp, nil
 	}
 	payload = payload[:n]
@@ -448,7 +448,7 @@ func responseFor(query *dns.Message, domain dns.Name, addr net.Addr) (*dns.Messa
 	// FORMERR MUST be returned."
 	if payloadSize < maxUDPPayload {
 		resp.Flags |= dns.RcodeFormatError
-		log.Debugf("rejected query from %s: advertised UDP payload size %d is below minimum %d", addr, payloadSize, maxUDPPayload)
+		log.Infof("rejected query from %s: advertised UDP payload size %d is below minimum %d", addr, payloadSize, maxUDPPayload)
 		return resp, nil
 	}
 
@@ -464,8 +464,12 @@ type record struct {
 	IsPoll   bool
 }
 
-func enqueueResponse(ch chan *record, rec *record) {
-	ch <- rec
+func enqueueResponse(ch chan *record, rec *record, stats *ServerStats) {
+	select {
+	case ch <- rec:
+	default:
+		stats.incResponseDropped()
+	}
 }
 
 // recvLoop repeatedly calls dnsConn.ReadFrom, extracts the packets contained in
@@ -500,7 +504,7 @@ func recvLoop(domain dns.Name, dnsConn net.PacketConn, ttConn *turbotunnel.Queue
 			// Payload is not long enough to contain a ClientID.
 			if errors.Is(err, io.ErrUnexpectedEOF) && len(payload) < wireConfig.ClientIDSize && resp != nil && resp.Rcode() == dns.RcodeNoError {
 				resp.Flags |= dns.RcodeNameError
-				log.Debugf("rejected query from %s: payload too short to contain a client ID (%d bytes)", addr, len(payload))
+				log.Infof("rejected query from %s: payload too short to contain a client ID (%d bytes)", addr, len(payload))
 			}
 		} else if packet != nil {
 			// Feed the incoming packet to KCP.
@@ -511,7 +515,7 @@ func recvLoop(domain dns.Name, dnsConn net.PacketConn, ttConn *turbotunnel.Queue
 			if resp.Rcode() == dns.RcodeNoError {
 				stats.incSuccess()
 			}
-			enqueueResponse(ch, &record{resp, addr, clientID, isPoll})
+			enqueueResponse(ch, &record{resp, addr, clientID, isPoll}, stats)
 		}
 	}
 }
@@ -582,7 +586,7 @@ func encodeResponsePayload(rec *record, data []byte, domain dns.Name) error {
 	return nil
 }
 
-func writeResponse(dnsConn net.PacketConn, rec *record, writeMu *sync.Mutex) {
+func writeResponse(dnsConn net.PacketConn, rec *record) {
 	buf, err := rec.Resp.WireFormat()
 	if err != nil {
 		log.Errorf("failed to serialize DNS response: %v", err)
@@ -612,15 +616,13 @@ func writeResponse(dnsConn net.PacketConn, rec *record, writeMu *sync.Mutex) {
 		}
 	}
 
-	writeMu.Lock()
 	_, err = dnsConn.WriteTo(buf, rec.Addr)
-	writeMu.Unlock()
 	if err != nil {
 		log.Warnf("failed to send DNS response to %s: %v", rec.Addr, err)
 	}
 }
 
-func sendLoop(dnsConn net.PacketConn, ttConn *turbotunnel.QueuePacketConn, ch <-chan *record, maxEncodedPayload int, responseDelay time.Duration, domain dns.Name, writeMu *sync.Mutex) error {
+func sendLoop(dnsConn net.PacketConn, ttConn *turbotunnel.QueuePacketConn, ch <-chan *record, maxEncodedPayload int, responseDelay time.Duration, domain dns.Name) error {
 	var nextRec *record
 	for {
 		rec := nextRec
@@ -652,11 +654,12 @@ func sendLoop(dnsConn net.PacketConn, ttConn *turbotunnel.QueuePacketConn, ch <-
 			waitDelay = 0
 		}
 
+		unstash := ttConn.Unstash(rec.ClientID)
+		outgoing := ttConn.OutgoingQueue(rec.ClientID)
+
 		timer := time.NewTimer(waitDelay)
 		for {
 			var p []byte
-			unstash := ttConn.Unstash(rec.ClientID)
-			outgoing := ttConn.OutgoingQueue(rec.ClientID)
 			select {
 			case p = <-unstash:
 			default:
@@ -697,7 +700,7 @@ func sendLoop(dnsConn net.PacketConn, ttConn *turbotunnel.QueuePacketConn, ch <-
 		}
 	}
 
-	writeResponse(dnsConn, rec, writeMu)
+	writeResponse(dnsConn, rec)
 	}
 }
 
@@ -945,7 +948,6 @@ func run(domain dns.Name, upstream string, dnsConn net.PacketConn, idleTimeout t
 		responseDelay = defaultResponseDelay
 	}
 
-	var writeMu sync.Mutex
 	ch := make(chan *record, responseQueueSize)
 	shutdown := make(chan struct{})
 	defer close(ch)
@@ -968,7 +970,7 @@ func run(domain dns.Name, upstream string, dnsConn net.PacketConn, idleTimeout t
 	for i := 0; i < responseWorkers; i++ {
 		go func() {
 			for {
-				err := sendLoop(dnsConn, ttConn, ch, maxEncodedPayload, responseDelay, domain, &writeMu)
+				err := sendLoop(dnsConn, ttConn, ch, maxEncodedPayload, responseDelay, domain)
 				if err == nil {
 					return
 				}
