@@ -37,19 +37,19 @@ import (
 
 // Default timeouts for VayDNS mode.
 const (
-	DefaultIdleTimeout              = 30 * time.Second
-	DefaultKeepAlive                = 5 * time.Second
+	DefaultIdleTimeout              = 10 * time.Second
+	DefaultKeepAlive                = 2 * time.Second
 	DefaultOpenStreamTimeout        = 10 * time.Second
 	DefaultReconnectDelay           = 1 * time.Second
 	DefaultReconnectMaxDelay        = 30 * time.Second
 	DefaultSessionCheckInterval     = 500 * time.Millisecond
-	DefaultUDPResponseTimeout       = 2500 * time.Millisecond
+	DefaultUDPResponseTimeout       = 800 * time.Millisecond
 	DefaultUDPWorkers               = 100
-	DefaultPollDelay                = 1 * time.Second
-	DefaultActivePollDelay          = 800 * time.Millisecond
-	DefaultPollMaxDelay             = 5 * time.Second
-	DefaultUDPTransportStaleTimeout = 20 * time.Second
-	DefaultOpenStreamFailureLimit   = 10
+	DefaultPollDelay                = 500 * time.Millisecond
+	DefaultActivePollDelay          = 200 * time.Millisecond
+	DefaultPollMaxDelay             = 2 * time.Second
+	DefaultUDPTransportStaleTimeout = 15 * time.Second
+	DefaultOpenStreamFailureLimit   = 3
 )
 
 // Resolver holds DNS resolver configuration.
@@ -160,7 +160,7 @@ type Tunnel struct {
 	PollDelay                time.Duration                 // default: 1s
 	ActivePollDelay          time.Duration                 // default: 800ms
 	PollMaxDelay             time.Duration                 // default: 5s
-	UDPTransportStaleTimeout time.Duration                 // default: 20s
+	UDPTransportStaleTimeout time.Duration                 // default: 15s
 	OpenStreamFailureLimit   int                           // default: 10 consecutive stream-open failures
 
 	// internal state

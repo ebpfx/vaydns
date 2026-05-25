@@ -47,8 +47,8 @@ import (
 )
 
 const (
-	defaultIdleTimeout = 30 * time.Second
-	defaultKeepAlive   = 5 * time.Second
+	defaultIdleTimeout = 10 * time.Second
+	defaultKeepAlive   = 2 * time.Second
 	// Keep this comfortably below the default client UDP response timeout and
 	// low enough for interactive traffic. Long batching delays are acceptable
 	// for bulk transfer but make chat and proxy workloads feel broken.
@@ -1085,10 +1085,10 @@ Example:
 	// idle-timeout: if no data is received from a client for this long,
 	// the tunnel session is considered dead and torn down. Should match
 	// the client's -idle-timeout.
-	flag.StringVar(&idleTimeoutStr, "idle-timeout", defaultIdleTimeout.String(), "session idle timeout (e.g. 30s, 1m); tears down sessions with no data within this period")
+	flag.StringVar(&idleTimeoutStr, "idle-timeout", defaultIdleTimeout.String(), "session idle timeout (e.g. 10s, 30s); tears down sessions with no data within this period")
 	// keepalive: how often smux sends keepalive pings. Must be shorter than
 	// idle-timeout. Should match the client's -keepalive value.
-	flag.StringVar(&keepAliveStr, "keepalive", defaultKeepAlive.String(), "keepalive ping interval (e.g. 5s, 1s); must be less than idle-timeout")
+	flag.StringVar(&keepAliveStr, "keepalive", defaultKeepAlive.String(), "keepalive ping interval (e.g. 2s, 1s); must be less than idle-timeout")
 	flag.IntVar(&clientIDSize, "clientid-size", 1, "client ID size in bytes")
 	flag.StringVar(&recordTypeStr, "record-type", "null", "DNS record type for downstream data (txt, null, hinfo, cname, a, aaaa, mx, ns, srv, cert, https, caa)")
 	flag.IntVar(&queueSize, "queue-size", turbotunnel.QueueSize, "packet queue size for DNS tunnel transport")
