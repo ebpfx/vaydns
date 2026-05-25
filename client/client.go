@@ -37,19 +37,19 @@ import (
 
 // Default timeouts for VayDNS mode.
 const (
-	DefaultIdleTimeout              = 30 * time.Second
-	DefaultKeepAlive                = 5 * time.Second
+	DefaultIdleTimeout              = 10 * time.Second
+	DefaultKeepAlive                = 2 * time.Second
 	DefaultOpenStreamTimeout        = 10 * time.Second
 	DefaultReconnectDelay           = 1 * time.Second
 	DefaultReconnectMaxDelay        = 30 * time.Second
 	DefaultSessionCheckInterval     = 500 * time.Millisecond
-	DefaultUDPResponseTimeout       = 2500 * time.Millisecond
+	DefaultUDPResponseTimeout       = 800 * time.Millisecond
 	DefaultUDPWorkers               = 100
-	DefaultPollDelay                = 1 * time.Second
-	DefaultActivePollDelay          = 800 * time.Millisecond
-	DefaultPollMaxDelay             = 5 * time.Second
-	DefaultUDPTransportStaleTimeout = 20 * time.Second
-	DefaultOpenStreamFailureLimit   = 10
+	DefaultPollDelay                = 500 * time.Millisecond
+	DefaultActivePollDelay          = 200 * time.Millisecond
+	DefaultPollMaxDelay             = 1 * time.Second
+	DefaultUDPTransportStaleTimeout = 15 * time.Second
+	DefaultOpenStreamFailureLimit   = 3
 )
 
 // Resolver holds DNS resolver configuration.
@@ -148,8 +148,8 @@ type Tunnel struct {
 	TunnelServer TunnelServer
 
 	// Session configuration. Zero values use defaults.
-	IdleTimeout              time.Duration                 // default: 30s
-	KeepAlive                time.Duration                 // default: 5s
+	IdleTimeout              time.Duration                 // default: 10s
+	KeepAlive                time.Duration                 // default: 2s
 	OpenStreamTimeout        time.Duration                 // default: 10s
 	ReconnectMinDelay        time.Duration                 // default: 1s
 	ReconnectMaxDelay        time.Duration                 // default: 30s
@@ -157,11 +157,11 @@ type Tunnel struct {
 	PacketQueueSize          int                           // default: QueueSize (512)
 	KCPWindowSize            int                           // default: PacketQueueSize/2
 	QueueOverflowMode        turbotunnel.QueueOverflowMode // default: drop
-	PollDelay                time.Duration                 // default: 1s
-	ActivePollDelay          time.Duration                 // default: 800ms
-	PollMaxDelay             time.Duration                 // default: 5s
-	UDPTransportStaleTimeout time.Duration                 // default: 20s
-	OpenStreamFailureLimit   int                           // default: 10 consecutive stream-open failures
+	PollDelay                time.Duration                 // default: 500ms
+	ActivePollDelay          time.Duration                 // default: 200ms
+	PollMaxDelay             time.Duration                 // default: 1s
+	UDPTransportStaleTimeout time.Duration                 // default: 15s
+	OpenStreamFailureLimit   int                           // default: 3 consecutive stream-open failures
 
 	// internal state
 	stateMu       sync.Mutex
@@ -256,30 +256,6 @@ func (t *Tunnel) effectiveKCPWindowSize() int {
 		ws = 1
 	}
 	return ws
-}
-
-func (t *Tunnel) effectiveSmuxBuffers(mtu int) (int, int) {
-	if mtu <= 0 {
-		mtu = 25
-	}
-	windowBytes := mtu * t.effectiveKCPWindowSize()
-	streamBuf := windowBytes * 4
-	if streamBuf < 8*1024 {
-		streamBuf = 8 * 1024
-	}
-	if streamBuf > 64*1024 {
-		streamBuf = 64 * 1024
-	}
-
-	receiveBuf := streamBuf * 8
-	if receiveBuf < 256*1024 {
-		receiveBuf = 256 * 1024
-	}
-	if receiveBuf < streamBuf {
-		receiveBuf = streamBuf
-	}
-
-	return streamBuf, receiveBuf
 }
 
 // InitiateResolverConnection creates the underlying transport connection
@@ -508,7 +484,8 @@ func (t *Tunnel) buildFullStack(mtu int, domain dns.Name) (*tunnelStack, error) 
 	smuxConfig := smux.DefaultConfig()
 	smuxConfig.KeepAliveInterval = t.KeepAlive
 	smuxConfig.KeepAliveTimeout = t.IdleTimeout
-	smuxConfig.MaxStreamBuffer, smuxConfig.MaxReceiveBuffer = t.effectiveSmuxBuffers(mtu)
+	smuxConfig.MaxStreamBuffer = 1 * 1024 * 1024
+	smuxConfig.MaxReceiveBuffer = 4 * 1024 * 1024
 	sess, err := smux.Client(conn, smuxConfig)
 	if err != nil {
 		closeTunnelStack(stack)
@@ -559,7 +536,8 @@ func (t *Tunnel) InitiateSmuxSession() error {
 	smuxConfig := smux.DefaultConfig()
 	smuxConfig.KeepAliveInterval = t.KeepAlive
 	smuxConfig.KeepAliveTimeout = t.IdleTimeout
-	smuxConfig.MaxStreamBuffer, smuxConfig.MaxReceiveBuffer = t.effectiveSmuxBuffers(t.TunnelServer.MTU)
+	smuxConfig.MaxStreamBuffer = 1 * 1024 * 1024
+	smuxConfig.MaxReceiveBuffer = 4 * 1024 * 1024
 	sess, err := smux.Client(t.kcpConn, smuxConfig)
 	if err != nil {
 		return fmt.Errorf("opening smux session: %v", err)

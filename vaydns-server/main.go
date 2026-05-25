@@ -47,8 +47,8 @@ import (
 )
 
 const (
-	defaultIdleTimeout = 30 * time.Second
-	defaultKeepAlive   = 5 * time.Second
+	defaultIdleTimeout = 10 * time.Second
+	defaultKeepAlive   = 2 * time.Second
 	// Keep this comfortably below the default client UDP response timeout and
 	// low enough for interactive traffic. Long batching delays are acceptable
 	// for bulk transfer but make chat and proxy workloads feel broken.
@@ -188,44 +188,14 @@ func handleStream(stream *smux.Stream, upstream string, conv uint32, idleTimeout
 	return nil
 }
 
-func effectiveSmuxBuffers(mtu int, kcpWindowSize int) (int, int) {
-	if mtu <= 0 {
-		mtu = 1232
-	}
-	if kcpWindowSize <= 0 {
-		kcpWindowSize = turbotunnel.QueueSize / 2
-		if kcpWindowSize < 1 {
-			kcpWindowSize = 1
-		}
-	}
-
-	windowBytes := mtu * kcpWindowSize
-	streamBuf := windowBytes * 4
-	if streamBuf < 8*1024 {
-		streamBuf = 8 * 1024
-	}
-	if streamBuf > 64*1024 {
-		streamBuf = 64 * 1024
-	}
-
-	receiveBuf := streamBuf * 8
-	if receiveBuf < 256*1024 {
-		receiveBuf = 256 * 1024
-	}
-	if receiveBuf < streamBuf {
-		receiveBuf = streamBuf
-	}
-
-	return streamBuf, receiveBuf
-}
-
 // acceptStreams wraps a KCP session in an smux.Session, then awaits smux
 // streams. It passes each stream to handleStream.
-func acceptStreams(conn *kcp.UDPSession, mtu int, upstream string, idleTimeout time.Duration, keepAlive time.Duration, kcpWindowSize int, upstreamDialSem chan struct{}) error {
+func acceptStreams(conn *kcp.UDPSession, upstream string, idleTimeout time.Duration, keepAlive time.Duration, upstreamDialSem chan struct{}) error {
 	smuxConfig := smux.DefaultConfig()
 	smuxConfig.KeepAliveInterval = keepAlive
 	smuxConfig.KeepAliveTimeout = idleTimeout
-	smuxConfig.MaxStreamBuffer, smuxConfig.MaxReceiveBuffer = effectiveSmuxBuffers(mtu, kcpWindowSize)
+	smuxConfig.MaxStreamBuffer = 1 * 1024 * 1024
+	smuxConfig.MaxReceiveBuffer = 4 * 1024 * 1024
 	sess, err := smux.Server(conn, smuxConfig)
 	if err != nil {
 		return err
@@ -289,7 +259,7 @@ func acceptSessions(ln *kcp.Listener, mtu int, upstream string, idleTimeout time
 				log.Debugf("[%08x] session closed", conn.GetConv())
 				conn.Close()
 			}()
-			err := acceptStreams(conn, mtu, upstream, idleTimeout, keepAlive, kcpWindowSize, upstreamDialSem)
+			err := acceptStreams(conn, upstream, idleTimeout, keepAlive, upstreamDialSem)
 			if err != nil && !errors.Is(err, io.ErrClosedPipe) {
 				log.Warnf("[%08x] session lost: %v", conn.GetConv(), err)
 			}
@@ -1085,10 +1055,10 @@ Example:
 	// idle-timeout: if no data is received from a client for this long,
 	// the tunnel session is considered dead and torn down. Should match
 	// the client's -idle-timeout.
-	flag.StringVar(&idleTimeoutStr, "idle-timeout", defaultIdleTimeout.String(), "session idle timeout (e.g. 30s, 1m); tears down sessions with no data within this period")
+	flag.StringVar(&idleTimeoutStr, "idle-timeout", defaultIdleTimeout.String(), "session idle timeout (e.g. 10s, 1m); tears down sessions with no data within this period")
 	// keepalive: how often smux sends keepalive pings. Must be shorter than
 	// idle-timeout. Should match the client's -keepalive value.
-	flag.StringVar(&keepAliveStr, "keepalive", defaultKeepAlive.String(), "keepalive ping interval (e.g. 5s, 1s); must be less than idle-timeout")
+	flag.StringVar(&keepAliveStr, "keepalive", defaultKeepAlive.String(), "keepalive ping interval (e.g. 2s, 1s); must be less than idle-timeout")
 	flag.IntVar(&clientIDSize, "clientid-size", 1, "client ID size in bytes")
 	flag.StringVar(&recordTypeStr, "record-type", "null", "DNS record type for downstream data (txt, null, hinfo, cname, a, aaaa, mx, ns, srv, cert, https, caa)")
 	flag.IntVar(&queueSize, "queue-size", turbotunnel.QueueSize, "packet queue size for DNS tunnel transport")

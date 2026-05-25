@@ -85,7 +85,7 @@ the session is considered dead and the client reconnects.
 Must match the server's
 .Fl idle-timeout .
 Default:
-.Cm 30s .
+.Cm 10s .
 
 .It Fl keepalive Ar DURATION
 Keepalive ping interval.
@@ -94,7 +94,7 @@ Must be less than
 Must match the server's
 .Fl keepalive .
 Default:
-.Cm 5s .
+.Cm 2s .
 
 .It Fl open-stream-timeout Ar DURATION
 Timeout for opening an smux stream.
@@ -106,7 +106,7 @@ Retire an idle session after
 .Ar N
 consecutive stream-open failures.
 Default:
-.Cm 10 .
+.Cm 3 .
 
 .It Fl reconnect-min Ar DURATION
 Initial backoff delay before retrying session creation.
@@ -155,22 +155,22 @@ Per-query UDP response timeout.
 Only applies when using
 .Fl udp-per-query-sockets .
 Default:
-.Cm 2500ms .
+.Cm 800ms .
 
 .It Fl poll-delay Ar DURATION
 Base delay before sending an empty DNS poll when idle.
 Default:
-.Cm 1s .
+.Cm 500ms .
 
 .It Fl active-poll-delay Ar DURATION
 Polling delay cap while streams are active or being opened.
 Default:
-.Cm 800ms .
+.Cm 200ms .
 
 .It Fl poll-max-delay Ar DURATION
 Maximum idle backoff between empty DNS polls.
 Default:
-.Cm 5s .
+.Cm 1s .
 
 .It Fl udp-transport-stale-timeout Ar DURATION
 Retire the current session if per-query UDP sees no valid response for
@@ -178,7 +178,7 @@ this long while streams need transport.
 Only applies when using
 .Fl udp-per-query-sockets .
 Default:
-.Cm 20s .
+.Cm 15s .
 
 .It Fl udp-per-query-sockets
 Use per-query UDP sockets instead of the default shared socket.
