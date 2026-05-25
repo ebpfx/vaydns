@@ -627,7 +627,7 @@ func (c *DNSPacketConn) send(transport net.PacketConn, p []byte, addr net.Addr) 
 }
 
 // sendWorker is a background worker that dequeues packets from workChan,
-// applies rate limiting, and sends them on the network.
+// and sends them on the network.
 func (c *DNSPacketConn) sendWorker(transport net.PacketConn, addr net.Addr, workChan <-chan []byte) {
 	closed := c.QueuePacketConn.Closed()
 	for {
@@ -637,13 +637,6 @@ func (c *DNSPacketConn) sendWorker(transport net.PacketConn, addr net.Addr, work
 		case p, ok := <-workChan:
 			if !ok {
 				return
-			}
-			c.rateLimiter.Wait()
-			// Re-check closed after rate limit wait.
-			select {
-			case <-closed:
-				return
-			default:
 			}
 			err := c.send(transport, p, addr)
 			if err != nil {
@@ -661,6 +654,12 @@ func (c *DNSPacketConn) sendWorker(transport net.PacketConn, addr net.Addr, work
 // on the network using send. It also does polling with empty packets when
 // requested by pollChan or after a timeout.
 func (c *DNSPacketConn) sendLoop(transport net.PacketConn, addr net.Addr, numWorkers int) error {
+	// For shared socket mode, a large number of workers is counter-productive
+	// as it causes packet reordering and RTT distortion when combined with
+	// rate limiting.
+	if numWorkers > 8 {
+		numWorkers = 8
+	}
 	workChan := make(chan []byte)
 	defer close(workChan)
 	for i := 0; i < numWorkers; i++ {
@@ -722,6 +721,11 @@ func (c *DNSPacketConn) sendLoop(transport net.PacketConn, addr net.Addr, numWor
 			pollDelay = c.currentPollDelay()
 		}
 		pollTimer.Reset(pollDelay)
+
+		// Wait for rate limit token BEFORE pulling the next packet or
+		// dispatching a poll. This ensures KCP's RTT calculation is
+		// accurate and workers don't hold packets in-memory during sleep.
+		c.rateLimiter.Wait()
 
 		// Dispatch the packet (data or nil poll) to a worker.
 		select {
