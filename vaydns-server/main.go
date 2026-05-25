@@ -232,7 +232,7 @@ func acceptStreams(conn *kcp.UDPSession, upstream string, idleTimeout time.Durat
 
 // acceptSessions listens for incoming KCP connections and passes them to
 // acceptStreams.
-func acceptSessions(ln *kcp.Listener, mtu int, upstream string, idleTimeout time.Duration, keepAlive time.Duration, kcpWindowSize int, upstreamDialSem chan struct{}, kcpNoDelay int, kcpInterval int, kcpResend int, kcpNC int) error {
+func acceptSessions(ln *kcp.Listener, mtu int, upstream string, idleTimeout time.Duration, keepAlive time.Duration, kcpWindowSize int, upstreamDialSem chan struct{}) error {
 	for {
 		conn, err := ln.AcceptKCP()
 		if err != nil {
@@ -244,8 +244,16 @@ func acceptSessions(ln *kcp.Listener, mtu int, upstream string, idleTimeout time
 		log.Infof("[%08x] new client session established", conn.GetConv())
 		// Permit coalescing the payloads of consecutive sends.
 		conn.SetStreamMode(true)
-		// Set KCP tuning parameters.
-		conn.SetNoDelay(kcpNoDelay, kcpInterval, kcpResend, kcpNC)
+		// Keep the congestion window disabled, but otherwise stay on KCP's
+		// conservative timing. The DNS layer itself is the real pacing
+		// bottleneck on shutdown paths; pushing KCP harder mostly creates
+		// extra churn.
+		conn.SetNoDelay(
+			0, // default nodelay
+			0, // default interval
+			0, // default resend
+			1, // nc=1 => congestion window off
+		)
 		conn.SetWindowSize(kcpWindowSize, kcpWindowSize)
 		if rc := conn.SetMtu(mtu); !rc {
 			log.Warnf("[%08x] failed to set MTU %d, dropping session", conn.GetConv(), mtu)
@@ -904,7 +912,7 @@ func computeMaxEncodedPayloadMultiRR(limit int, chunkSize int) int {
 	return low
 }
 
-func run(domain dns.Name, upstream string, dnsConn net.PacketConn, idleTimeout time.Duration, keepAlive time.Duration, queueSize int, kcpWindowSize int, queueOverflowMode turbotunnel.QueueOverflowMode, responseQueueSize int, responseWorkers int, responseDelay time.Duration, wireConfig turbotunnel.WireConfig, kcpNoDelay int, kcpInterval int, kcpResend int, kcpNC int) error {
+func run(domain dns.Name, upstream string, dnsConn net.PacketConn, idleTimeout time.Duration, keepAlive time.Duration, queueSize int, kcpWindowSize int, queueOverflowMode turbotunnel.QueueOverflowMode, responseQueueSize int, responseWorkers int, responseDelay time.Duration, wireConfig turbotunnel.WireConfig) error {
 	defer dnsConn.Close()
 
 	// We have a variable amount of room in which to encode downstream
@@ -952,7 +960,7 @@ func run(domain dns.Name, upstream string, dnsConn net.PacketConn, idleTimeout t
 	defer ln.Close()
 	upstreamDialSem := make(chan struct{}, upstreamDialConcurrency)
 	go func() {
-		err := acceptSessions(ln, mtu, upstream, idleTimeout, keepAlive, kcpWindowSize, upstreamDialSem, kcpNoDelay, kcpInterval, kcpResend, kcpNC)
+		err := acceptSessions(ln, mtu, upstream, idleTimeout, keepAlive, kcpWindowSize, upstreamDialSem)
 		if err != nil && !errors.Is(err, net.ErrClosed) {
 			log.Fatalf("KCP listener stopped accepting sessions: %v", err)
 		}
@@ -1032,10 +1040,6 @@ func main() {
 	var responseQueueSize int
 	var responseWorkers int
 	var responseDelayStr string
-	var kcpNoDelay int
-	var kcpInterval int
-	var kcpResend int
-	var kcpNC int
 
 	flag.Usage = func() {
 		fmt.Fprintf(flag.CommandLine.Output(), `Usage:
@@ -1063,10 +1067,6 @@ Example:
 	flag.IntVar(&queueSize, "queue-size", turbotunnel.QueueSize, "packet queue size for DNS tunnel transport")
 	flag.IntVar(&kcpWindowSize, "kcp-window-size", 0, "KCP send/receive window size in packets (0 = queue-size/2)")
 	flag.StringVar(&queueOverflowStr, "queue-overflow", string(turbotunnel.DefaultQueueOverflowMode), "queue overflow behavior: drop or block")
-	flag.IntVar(&kcpNoDelay, "kcp-nodelay", 1, "KCP nodelay mode (0 = disabled, 1 = enabled)")
-	flag.IntVar(&kcpInterval, "kcp-interval", 20, "KCP internal update interval in milliseconds")
-	flag.IntVar(&kcpResend, "kcp-resend", 2, "KCP fast retransmit mode (0 = disabled, 2 = enabled)")
-	flag.IntVar(&kcpNC, "kcp-nc", 1, "KCP congestion control (0 = enabled, 1 = disabled)")
 	flag.IntVar(&responseQueueSize, "response-queue-size", defaultResponseQueueSize, "pending DNS response queue size (0 = queue-size)")
 	flag.IntVar(&responseWorkers, "response-workers", defaultResponseWorkers, "number of DNS response sender workers")
 	flag.StringVar(&responseDelayStr, "response-delay", defaultResponseDelay.String(), "maximum time to hold a DNS response open for downstream data (e.g. 200ms, 500ms)")
@@ -1225,7 +1225,7 @@ Example:
 		}
 	}
 
-	err = run(domain, upstream, dnsConn, idleTimeout, keepAlive, queueSize, kcpWindowSize, queueOverflowMode, responseQueueSize, responseWorkers, responseDelay, wireConfig, kcpNoDelay, kcpInterval, kcpResend, kcpNC)
+	err = run(domain, upstream, dnsConn, idleTimeout, keepAlive, queueSize, kcpWindowSize, queueOverflowMode, responseQueueSize, responseWorkers, responseDelay, wireConfig)
 	if err != nil {
 		log.Fatalf("%v", err)
 	}
