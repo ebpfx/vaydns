@@ -696,7 +696,9 @@ func sendLoop(dnsConn net.PacketConn, ttConn *turbotunnel.QueuePacketConn, ch <-
 
 		if err := encodeResponsePayload(rec, payload.Bytes(), domain); err != nil {
 			log.Errorf("failed to encode downstream payload: %v", err)
-			continue
+			// Ensure we send a response anyway, even if it's an error.
+			rec.Resp.Flags = (rec.Resp.Flags & 0xfff0) | dns.RcodeServerFailure
+			rec.Resp.Answer = nil
 		}
 	}
 
@@ -793,21 +795,21 @@ func computeMaxEncodedPayload(limit int, encode func([]byte) []byte) int {
 }
 
 // computeMaxEncodedPayloadNameBased computes the maximum raw payload bytes that
-// can fit in a name-based RDATA (CNAME, NS, MX, SRV, HTTPS). The capacity is the same
-// for all name-based types because it is constrained by the 255-byte DNS name
-// limit, not the UDP payload size. The MX/SRV/HTTPS fixed headers (2/6/2 bytes)
-// add to the total RDATA but do not reduce the name portion.
+// can fit in a name-based RDATA (CNAME, NS, MX, SRV, HTTPS). Capacity is
+// constrained by the 255-byte DNS name limit.
 func computeMaxEncodedPayloadNameBased(domain dns.Name) int {
-	domainWireLen := 1 // null terminator
-	for _, label := range domain {
-		domainWireLen += 1 + len(label)
+	low := 0
+	high := 255
+	for low+1 < high {
+		mid := (low + high) / 2
+		_, err := dns.EncodeRDataCNAME(make([]byte, mid), domain)
+		if err == nil {
+			low = mid
+		} else {
+			high = mid
+		}
 	}
-	available := 255 - domainWireLen
-	if available <= 0 {
-		return 0
-	}
-	encodedBytes := available * 63 / 64
-	return encodedBytes * 5 / 8
+	return low
 }
 
 // computeMaxEncodedPayloadMultiRR computes the maximum raw payload bytes that
