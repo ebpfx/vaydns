@@ -459,6 +459,10 @@ func (c *DNSPacketConn) recvLoop(transport net.PacketConn) error {
 
 		payload, isForged := dnsResponsePayload(&resp, c.domain, c.rrType)
 		if isForged {
+			// The resolver is reachable even if it returns an error response.
+			// Treat that as transport success so stale detection does not
+			// churn sessions in shared-socket mode.
+			c.markSuccess()
 			c.forgedStats.Record(resp.Flags & 0x000f)
 			continue
 		}
