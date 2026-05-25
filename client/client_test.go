@@ -138,11 +138,14 @@ func TestTunnelServerDefaults(t *testing.T) {
 		t.Fatalf("NewTunnelServer: %v", err)
 	}
 
-	if got, want := ts.effectiveMaxQnameLen(), 101; got != want {
+	if got, want := ts.effectiveMaxQnameLen(), 63; got != want {
 		t.Fatalf("effectiveMaxQnameLen = %d, want %d", got, want)
 	}
-	if got, want := ts.wireConfig().ClientIDSize, 2; got != want {
+	if got, want := ts.wireConfig().ClientIDSize, 1; got != want {
 		t.Fatalf("default client ID size = %d, want %d", got, want)
+	}
+	if got, want := ts.MaxNumLabels, 1; got != want {
+		t.Fatalf("default max num labels = %d, want %d", got, want)
 	}
 
 	ts.ClientIDSize = 4

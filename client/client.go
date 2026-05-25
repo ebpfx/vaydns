@@ -81,13 +81,13 @@ type TunnelServer struct {
 	Addr dns.Name
 	MTU  int // auto-computed if 0 when InitiateKCPConn is called
 
-	// ClientIDSize is the ClientID size in bytes (default: 2).
+	// ClientIDSize is the ClientID size in bytes (default: 1).
 	ClientIDSize int
 
 	// MaxQnameLen is the maximum QNAME wire length (default: 63).
 	MaxQnameLen int
 
-	// MaxNumLabels is the maximum number of data labels (default: 0 = unlimited).
+	// MaxNumLabels is the maximum number of data labels (default: 1).
 	MaxNumLabels int
 
 	// RPS limits outgoing DNS queries per second (default: 0 = unlimited).
@@ -106,8 +106,11 @@ func NewTunnelServer(addr string) (TunnelServer, error) {
 	}
 
 	return TunnelServer{
-		Addr:        domain,
+		Addr:         domain,
 		RecordType:   "null",
+		ClientIDSize: 1,
+		MaxQnameLen:  63,
+		MaxNumLabels: 1,
 	}, nil
 }
 
