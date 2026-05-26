@@ -730,8 +730,10 @@ func sendLoop(dnsConn net.PacketConn, ttConn *turbotunnel.QueuePacketConn, ch <-
 
 		if err := encodeResponsePayload(rec, payload.Bytes(), domain); err != nil {
 			log.Errorf("failed to encode downstream payload: %v", err)
-			// Ensure we send a response anyway, even if it's an error.
-			rec.Resp.Flags = (rec.Resp.Flags & 0xfff0) | dns.RcodeServerFailure
+			// Send an empty NOERROR response rather than returning SERVFAIL.
+			// Clients treat non-NOERROR responses as forged/error responses,
+			// which breaks the tunnel semantics. Upstream reliability (KCP)
+			// will handle retransmission.
 			rec.Resp.Answer = nil
 		}
 		bufferPool.Put(payload)

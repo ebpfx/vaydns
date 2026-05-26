@@ -1,7 +1,6 @@
 package turbotunnel
 
 import (
-	"fmt"
 	"net"
 	"sync"
 	"sync/atomic"
