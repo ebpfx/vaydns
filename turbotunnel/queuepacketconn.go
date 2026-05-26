@@ -164,11 +164,13 @@ func (c *QueuePacketConn) WriteTo(p []byte, addr net.Addr) (int, error) {
 			record.sendMu.Unlock()
 			return len(buf), nil
 		default:
-			// Return an error if the send queue is full. This allows the
-			// reliability layer (e.g. KCP) to see the backpressure and
-			// slow down, rather than assuming the packet was sent.
+			// Drop the outgoing packet if the send queue is full. In the
+			// default drop mode, upstream reliability layers (e.g. KCP) will
+			// handle retransmission. Returning an error here causes KCP
+			// sessions to treat it as a fatal write error, so pretend the
+			// packet was sent instead.
 			record.sendMu.Unlock()
-			return 0, fmt.Errorf("queue full")
+			return len(buf), nil
 		}
 	}
 }
