@@ -47,14 +47,20 @@ import (
 )
 
 const (
-	defaultIdleTimeout = 10 * time.Second
-	defaultKeepAlive   = 2 * time.Second
+	DefaultMaxUDPPayload = 1280 - 40 - 8
+	defaultIdleTimeout   = 10 * time.Second
+	defaultKeepAlive     = 2 * time.Second
 	// Keep this comfortably below the default client UDP response timeout and
 	// low enough for interactive traffic. Long batching delays are acceptable
 	// for bulk transfer but make chat and proxy workloads feel broken.
 	defaultResponseDelay     = 500 * time.Millisecond
 	defaultResponseWorkers   = 8
 	defaultResponseQueueSize = 0
+	DefaultUpstreamAddr      = "127.0.0.1:10888"
+	DefaultClientIDSize      = 1
+	DefaultRecordType        = "null"
+	DefaultKCPWindowSize     = 0
+	DefaultLogLevel          = "info"
 
 	// Default TTL for Answer resource records.
 	responseTTL = 60
@@ -88,7 +94,7 @@ var (
 	//
 	// On 2020-04-19, the Quad9 resolver was seen to have a UDP payload size
 	// of 1232. Cloudflare's was 1452, and Google's was 4096.
-	maxUDPPayload = 1280 - 40 - 8
+	maxUDPPayload = DefaultMaxUDPPayload
 
 	// recordType is the DNS record type used for downstream data encoding.
 	// Set from the -record-type command-line flag.
@@ -659,87 +665,87 @@ func sendLoop(dnsConn net.PacketConn, ttConn *turbotunnel.QueuePacketConn, ch <-
 			}
 		}
 
-	if rec.Resp.Rcode() == dns.RcodeNoError && len(rec.Resp.Question) == 1 {
-		rec.Resp.Answer = []dns.RR{
-			{
-				Name:  rec.Resp.Question[0].Name,
-				Type:  rec.Resp.Question[0].Type,
-				Class: rec.Resp.Question[0].Class,
-				TTL:   responseTTL,
-				Data:  nil,
-			},
-		}
+		if rec.Resp.Rcode() == dns.RcodeNoError && len(rec.Resp.Question) == 1 {
+			rec.Resp.Answer = []dns.RR{
+				{
+					Name:  rec.Resp.Question[0].Name,
+					Type:  rec.Resp.Question[0].Type,
+					Class: rec.Resp.Question[0].Class,
+					TTL:   responseTTL,
+					Data:  nil,
+				},
+			}
 
-		payload := bufferPool.Get().(*bytes.Buffer)
-		payload.Reset()
+			payload := bufferPool.Get().(*bytes.Buffer)
+			payload.Reset()
 
-		limit := maxEncodedPayload
-		waitDelay := responseDelay
-		if rec.IsPoll {
-			waitDelay = 0
-		}
+			limit := maxEncodedPayload
+			waitDelay := responseDelay
+			if rec.IsPoll {
+				waitDelay = 0
+			}
 
-		unstash := ttConn.Unstash(rec.ClientID)
-		outgoing := ttConn.OutgoingQueue(rec.ClientID)
+			unstash := ttConn.Unstash(rec.ClientID)
+			outgoing := ttConn.OutgoingQueue(rec.ClientID)
 
-		timer := time.NewTimer(waitDelay)
-		for {
-			var p []byte
-			select {
-			case p = <-unstash:
-			default:
+			timer := time.NewTimer(waitDelay)
+			for {
+				var p []byte
 				select {
 				case p = <-unstash:
-				case p = <-outgoing:
 				default:
-					// If there is another client waiting in the queue,
-					// don't wait for more data for the current client.
-					// This prevents worker starvation.
 					select {
-					case nextRec = <-ch:
-						// Got another client's query; finish this one.
+					case p = <-unstash:
+					case p = <-outgoing:
 					default:
-						// No other clients waiting; we can afford to wait.
+						// If there is another client waiting in the queue,
+						// don't wait for more data for the current client.
+						// This prevents worker starvation.
 						select {
-						case p = <-unstash:
-						case p = <-outgoing:
-						case <-timer.C:
 						case nextRec = <-ch:
+							// Got another client's query; finish this one.
+						default:
+							// No other clients waiting; we can afford to wait.
+							select {
+							case p = <-unstash:
+							case p = <-outgoing:
+							case <-timer.C:
+							case nextRec = <-ch:
+							}
 						}
 					}
 				}
-			}
-			timer.Reset(0)
+				timer.Reset(0)
 
-			if len(p) == 0 {
-				break
-			}
+				if len(p) == 0 {
+					break
+				}
 
-			limit -= 2 + len(p)
-			if payload.Len() > 0 && limit < 0 {
-				ttConn.Stash(p, rec.ClientID)
-				break
+				limit -= 2 + len(p)
+				if payload.Len() > 0 && limit < 0 {
+					ttConn.Stash(p, rec.ClientID)
+					break
+				}
+				if int(uint16(len(p))) != len(p) {
+					panic(len(p))
+				}
+				binary.Write(payload, binary.BigEndian, uint16(len(p)))
+				payload.Write(p)
 			}
-			if int(uint16(len(p))) != len(p) {
-				panic(len(p))
+			timer.Stop()
+
+			if err := encodeResponsePayload(rec, payload.Bytes(), domain); err != nil {
+				log.Errorf("failed to encode downstream payload: %v", err)
+				// Send an empty NOERROR response rather than returning SERVFAIL.
+				// Clients treat non-NOERROR responses as forged/error responses,
+				// which breaks the tunnel semantics. Upstream reliability (KCP)
+				// will handle retransmission.
+				rec.Resp.Answer = nil
 			}
-			binary.Write(payload, binary.BigEndian, uint16(len(p)))
-			payload.Write(p)
+			bufferPool.Put(payload)
 		}
-		timer.Stop()
 
-		if err := encodeResponsePayload(rec, payload.Bytes(), domain); err != nil {
-			log.Errorf("failed to encode downstream payload: %v", err)
-			// Send an empty NOERROR response rather than returning SERVFAIL.
-			// Clients treat non-NOERROR responses as forged/error responses,
-			// which breaks the tunnel semantics. Upstream reliability (KCP)
-			// will handle retransmission.
-			rec.Resp.Answer = nil
-		}
-		bufferPool.Put(payload)
-	}
-
-	writeResponse(dnsConn, rec)
+		writeResponse(dnsConn, rec)
 	}
 }
 
@@ -1062,10 +1068,10 @@ Example:
 `, os.Args[0])
 		flag.PrintDefaults()
 	}
-	flag.IntVar(&maxUDPPayload, "mtu", maxUDPPayload, "maximum size of DNS responses")
+	flag.IntVar(&maxUDPPayload, "mtu", DefaultMaxUDPPayload, "maximum size of DNS responses")
 	flag.StringVar(&udpAddr, "udp", "", "UDP address to listen on (required)")
 	flag.StringVar(&domainArg, "domain", "", "tunnel domain (e.g., t.example.com)")
-	flag.StringVar(&upstream, "upstream", "127.0.0.1:10888", "TCP address to forward tunneled connections to (default 127.0.0.1:10888)")
+	flag.StringVar(&upstream, "upstream", DefaultUpstreamAddr, "TCP address to forward tunneled connections to (default 127.0.0.1:10888)")
 	// idle-timeout: if no data is received from a client for this long,
 	// the tunnel session is considered dead and torn down. Should match
 	// the client's -idle-timeout.
@@ -1073,17 +1079,17 @@ Example:
 	// keepalive: how often smux sends keepalive pings. Must be shorter than
 	// idle-timeout. Should match the client's -keepalive value.
 	flag.StringVar(&keepAliveStr, "keepalive", defaultKeepAlive.String(), "keepalive ping interval (e.g. 2s, 1s); must be less than idle-timeout")
-	flag.IntVar(&clientIDSize, "clientid-size", 1, "client ID size in bytes")
-	flag.StringVar(&recordTypeStr, "record-type", "null", "DNS record type for downstream data (txt, null, hinfo, cname, a, aaaa, mx, ns, srv, cert, https, caa)")
+	flag.IntVar(&clientIDSize, "clientid-size", DefaultClientIDSize, "client ID size in bytes")
+	flag.StringVar(&recordTypeStr, "record-type", DefaultRecordType, "DNS record type for downstream data (txt, null, hinfo, cname, a, aaaa, mx, ns, srv, cert, https, caa)")
 	flag.IntVar(&queueSize, "queue-size", turbotunnel.QueueSize, "packet queue size for DNS tunnel transport")
-	flag.IntVar(&kcpWindowSize, "kcp-window-size", 0, "KCP send/receive window size in packets (0 = queue-size/2)")
+	flag.IntVar(&kcpWindowSize, "kcp-window-size", DefaultKCPWindowSize, "KCP send/receive window size in packets (0 = queue-size/2)")
 	flag.StringVar(&queueOverflowStr, "queue-overflow", string(turbotunnel.DefaultQueueOverflowMode), "queue overflow behavior: drop or block")
 	flag.IntVar(&responseQueueSize, "response-queue-size", defaultResponseQueueSize, "pending DNS response queue size (0 = queue-size)")
 	flag.IntVar(&responseWorkers, "response-workers", defaultResponseWorkers, "number of DNS response sender workers")
 	flag.StringVar(&responseDelayStr, "response-delay", defaultResponseDelay.String(), "maximum time to hold a DNS response open for downstream data (e.g. 200ms, 500ms)")
 
 	var logLevel string
-	flag.StringVar(&logLevel, "log-level", "info", "log level (debug, info, warning, error)")
+	flag.StringVar(&logLevel, "log-level", DefaultLogLevel, "log level (debug, info, warning, error)")
 	flag.BoolVar(&showVersion, "version", false, "print version and exit")
 	flag.Parse()
 

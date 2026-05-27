@@ -134,14 +134,14 @@ Maximum total QNAME length in wire format.
 Shorter values improve compatibility with restrictive resolvers
 but reduce upstream throughput.
 Default:
-.Cm 63 .
+.Cm 101 .
 
 .It Fl max-num-labels Ar N
 Maximum number of data labels in the query name before the tunnel domain.
 0 means unlimited.
 1 produces the most DNS-like queries.
 Default:
-.Cm 1 .
+.Cm 2 .
 
 .It Fl udp-workers Ar N
 Number of concurrent UDP worker goroutines.

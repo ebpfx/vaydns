@@ -50,6 +50,13 @@ const (
 	DefaultPollMaxDelay             = 1 * time.Second
 	DefaultUDPTransportStaleTimeout = 15 * time.Second
 	DefaultOpenStreamFailureLimit   = 3
+	DefaultClientIDSize             = 1
+	DefaultMaxQnameLen              = 101
+	DefaultMaxNumLabels             = 2
+	DefaultRecordType               = "null"
+	DefaultRPSLimit                 = 0
+	DefaultKCPWindowSize            = 0
+	MaxQnameWireLen                 = 253
 )
 
 // Resolver holds DNS resolver configuration.
@@ -81,20 +88,20 @@ type TunnelServer struct {
 	Addr dns.Name
 	MTU  int // auto-computed if 0 when InitiateKCPConn is called
 
-	// ClientIDSize is the ClientID size in bytes (default: 1).
+	// ClientIDSize is the ClientID size in bytes (default: DefaultClientIDSize).
 	ClientIDSize int
 
-	// MaxQnameLen is the maximum QNAME wire length (default: 63).
+	// MaxQnameLen is the maximum QNAME wire length (default: DefaultMaxQnameLen).
 	MaxQnameLen int
 
-	// MaxNumLabels is the maximum number of data labels (default: 1).
+	// MaxNumLabels is the maximum number of data labels (default: DefaultMaxNumLabels).
 	MaxNumLabels int
 
-	// RPS limits outgoing DNS queries per second (default: 0 = unlimited).
+	// RPS limits outgoing DNS queries per second (default: DefaultRPSLimit = unlimited).
 	RPS float64
 
 	// RecordType selects the DNS record type for downstream data.
-	// Supported values: "txt", "null", "hinfo", "cname", "a", "aaaa", "mx", "ns", "srv", "cert", "https", "caa" (default: "null").
+	// Supported values: "txt", "null", "hinfo", "cname", "a", "aaaa", "mx", "ns", "srv", "cert", "https", "caa" (default: DefaultRecordType).
 	RecordType string
 }
 
@@ -107,10 +114,10 @@ func NewTunnelServer(addr string) (TunnelServer, error) {
 
 	return TunnelServer{
 		Addr:         domain,
-		RecordType:   "null",
-		ClientIDSize: 1,
-		MaxQnameLen:  63,
-		MaxNumLabels: 1,
+		RecordType:   DefaultRecordType,
+		ClientIDSize: DefaultClientIDSize,
+		MaxQnameLen:  DefaultMaxQnameLen,
+		MaxNumLabels: DefaultMaxNumLabels,
 	}, nil
 }
 
@@ -118,7 +125,7 @@ func NewTunnelServer(addr string) (TunnelServer, error) {
 func (ts *TunnelServer) wireConfig() turbotunnel.WireConfig {
 	size := ts.ClientIDSize
 	if size <= 0 {
-		size = 1
+		size = DefaultClientIDSize
 	}
 	return turbotunnel.WireConfig{ClientIDSize: size}
 }
@@ -140,7 +147,15 @@ func (ts *TunnelServer) effectiveMaxQnameLen() int {
 	if ts.MaxQnameLen > 0 {
 		return ts.MaxQnameLen
 	}
-	return 63
+	return DefaultMaxQnameLen
+}
+
+// effectiveMaxNumLabels returns the configured max number of data labels.
+func (ts *TunnelServer) effectiveMaxNumLabels() int {
+	if ts.MaxNumLabels > 0 {
+		return ts.MaxNumLabels
+	}
+	return DefaultMaxNumLabels
 }
 
 // Tunnel represents a DNS tunnel connection. Create with NewTunnel, then
@@ -158,7 +173,7 @@ type Tunnel struct {
 	ReconnectMaxDelay        time.Duration                 // default: 30s
 	SessionCheckInterval     time.Duration                 // default: 500ms
 	PacketQueueSize          int                           // default: QueueSize (512)
-	KCPWindowSize            int                           // default: PacketQueueSize/2
+	KCPWindowSize            int                           // default: DefaultKCPWindowSize -> PacketQueueSize/2
 	QueueOverflowMode        turbotunnel.QueueOverflowMode // default: drop
 	PollDelay                time.Duration                 // default: 500ms
 	ActivePollDelay          time.Duration                 // default: 200ms
@@ -316,7 +331,7 @@ func (t *Tunnel) InitiateDNSPacketConn(domain dns.Name) error {
 		domain,
 		rateLimiter,
 		maxQnameLen,
-		t.TunnelServer.MaxNumLabels,
+		t.TunnelServer.effectiveMaxNumLabels(),
 		t.wireConfig,
 		t.forgedStats,
 		rrType,
@@ -342,11 +357,11 @@ func (t *Tunnel) effectiveMTU() (int, error) {
 	mtu := t.TunnelServer.MTU
 	if mtu <= 0 {
 		maxQnameLen := t.TunnelServer.effectiveMaxQnameLen()
-		mtu = DNSNameCapacity(t.TunnelServer.Addr, maxQnameLen, t.TunnelServer.MaxNumLabels) - t.wireConfig.DataOverhead()
+		mtu = DNSNameCapacity(t.TunnelServer.Addr, maxQnameLen, t.TunnelServer.effectiveMaxNumLabels()) - t.wireConfig.DataOverhead()
 	}
 	if mtu < 25 {
 		return 0, fmt.Errorf("MTU %d is too small (minimum 25); try increasing -max-qname-len (currently %d), increasing -max-num-labels (currently %d), using a shorter domain, or decreasing -clientid-size (currently %d)",
-			mtu, t.TunnelServer.effectiveMaxQnameLen(), t.TunnelServer.MaxNumLabels, t.wireConfig.ClientIDSize)
+			mtu, t.TunnelServer.effectiveMaxQnameLen(), t.TunnelServer.effectiveMaxNumLabels(), t.wireConfig.ClientIDSize)
 	}
 	return mtu, nil
 }
@@ -465,7 +480,7 @@ func (t *Tunnel) buildFullStack(mtu int, domain dns.Name) (*tunnelStack, error) 
 		domain,
 		rateLimiter,
 		t.TunnelServer.effectiveMaxQnameLen(),
-		t.TunnelServer.MaxNumLabels,
+		t.TunnelServer.effectiveMaxNumLabels(),
 		t.wireConfig,
 		stack.forgedStats,
 		t.TunnelServer.effectiveRRType(),
@@ -514,11 +529,11 @@ func (t *Tunnel) buildFullStack(mtu int, domain dns.Name) (*tunnelStack, error) 
 func (t *Tunnel) InitiateKCPConn(mtu int) error {
 	if mtu <= 0 {
 		maxQnameLen := t.TunnelServer.effectiveMaxQnameLen()
-		mtu = DNSNameCapacity(t.TunnelServer.Addr, maxQnameLen, t.TunnelServer.MaxNumLabels) - t.wireConfig.DataOverhead()
+		mtu = DNSNameCapacity(t.TunnelServer.Addr, maxQnameLen, t.TunnelServer.effectiveMaxNumLabels()) - t.wireConfig.DataOverhead()
 	}
 	if mtu < 25 {
 		return fmt.Errorf("MTU %d is too small (minimum 25); try increasing -max-qname-len (currently %d), increasing -max-num-labels (currently %d), using a shorter domain, or decreasing -clientid-size (currently %d)",
-			mtu, t.TunnelServer.effectiveMaxQnameLen(), t.TunnelServer.MaxNumLabels, t.wireConfig.ClientIDSize)
+			mtu, t.TunnelServer.effectiveMaxQnameLen(), t.TunnelServer.effectiveMaxNumLabels(), t.wireConfig.ClientIDSize)
 	}
 	t.TunnelServer.MTU = mtu
 
@@ -915,10 +930,10 @@ func (t *Tunnel) handleConn(local *net.TCPConn, sess *smux.Session, conv uint32,
 // DNSNameCapacity returns the number of raw bytes that can be encoded in a DNS
 // query name, given the domain suffix and encoding constraints.
 func DNSNameCapacity(domain dns.Name, maxQnameLen int, maxNumLabels int) int {
-	const labelLen = 63
+	const labelLen = dns.MaxLabelLength
 
-	if maxQnameLen <= 0 || maxQnameLen > 253 {
-		maxQnameLen = 253
+	if maxQnameLen <= 0 || maxQnameLen > MaxQnameWireLen {
+		maxQnameLen = MaxQnameWireLen
 	}
 
 	domainWireLen := 0

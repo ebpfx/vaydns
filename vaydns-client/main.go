@@ -21,6 +21,11 @@ import (
 
 var version = "dev"
 
+const (
+	DefaultListenAddr = "127.0.0.1:10888"
+	DefaultLogLevel   = "info"
+)
+
 func main() {
 	var showVersion bool
 	var domainArg string
@@ -74,10 +79,10 @@ Examples:
 	}
 	flag.StringVar(&udpAddr, "udp", "", "address of UDP DNS resolver")
 	flag.StringVar(&domainArg, "domain", "", "tunnel domain (e.g., t.example.com)")
-	flag.StringVar(&listenAddr, "listen", "127.0.0.1:10888", "TCP address to listen on for local connections (default 127.0.0.1:10888)")
-	flag.IntVar(&maxQnameLen, "max-qname-len", 63, "maximum total QNAME length in wire format (0 = 253 per RFC 1035)")
-	flag.IntVar(&maxNumLabels, "max-num-labels", 1, "maximum number of data labels in query name (0 = unlimited)")
-	flag.Float64Var(&rpsLimit, "rps", 0, "limit outgoing DNS queries per second (0 = unlimited)")
+	flag.StringVar(&listenAddr, "listen", DefaultListenAddr, "TCP address to listen on for local connections (default 127.0.0.1:10888)")
+	flag.IntVar(&maxQnameLen, "max-qname-len", client.DefaultMaxQnameLen, "maximum total QNAME length in wire format (0 = 253 per RFC 1035)")
+	flag.IntVar(&maxNumLabels, "max-num-labels", client.DefaultMaxNumLabels, "maximum number of data labels in query name (0 = unlimited)")
+	flag.Float64Var(&rpsLimit, "rps", client.DefaultRPSLimit, "limit outgoing DNS queries per second (0 = unlimited)")
 	flag.StringVar(&idleTimeoutStr, "idle-timeout", client.DefaultIdleTimeout.String(), "session idle timeout (e.g. 10s, 1m); reconnects if no data received within this period")
 	flag.StringVar(&keepAliveStr, "keepalive", client.DefaultKeepAlive.String(), "keepalive ping interval (e.g. 2s, 1s); must be less than idle-timeout")
 	flag.StringVar(&reconnectMinStr, "reconnect-min", client.DefaultReconnectDelay.String(), "minimum delay before retrying session creation (e.g. 500ms, 1s)")
@@ -92,14 +97,14 @@ Examples:
 	flag.BoolVar(&udpPerQuerySockets, "udp-per-query-sockets", false, "use per-query UDP sockets instead of the default shared socket")
 	flag.StringVar(&udpTimeoutStr, "udp-timeout", client.DefaultUDPResponseTimeout.String(), "per-query UDP response timeout (e.g. 800ms, 3s)")
 	flag.BoolVar(&udpAcceptErrors, "udp-accept-errors", false, "accept DNS error responses instead of filtering them (disables censorship evasion)")
-	flag.IntVar(&clientIDSize, "clientid-size", 1, "client ID size in bytes")
-	flag.StringVar(&recordTypeStr, "record-type", "null", "DNS record type for downstream data (txt, null, hinfo, cname, a, aaaa, mx, ns, srv, cert, https, caa)")
+	flag.IntVar(&clientIDSize, "clientid-size", client.DefaultClientIDSize, "client ID size in bytes")
+	flag.StringVar(&recordTypeStr, "record-type", client.DefaultRecordType, "DNS record type for downstream data (txt, null, hinfo, cname, a, aaaa, mx, ns, srv, cert, https, caa)")
 	flag.IntVar(&queueSize, "queue-size", turbotunnel.QueueSize, "packet queue size for transport and DNS layers")
-	flag.IntVar(&kcpWindowSize, "kcp-window-size", 0, "KCP send/receive window size in packets (0 = queue-size/2)")
+	flag.IntVar(&kcpWindowSize, "kcp-window-size", client.DefaultKCPWindowSize, "KCP send/receive window size in packets (0 = queue-size/2)")
 	flag.StringVar(&queueOverflowStr, "queue-overflow", string(turbotunnel.DefaultQueueOverflowMode), "queue overflow behavior: drop or block")
 
 	var logLevel string
-	flag.StringVar(&logLevel, "log-level", "info", "log level (debug, info, warning, error)")
+	flag.StringVar(&logLevel, "log-level", DefaultLogLevel, "log level (debug, info, warning, error)")
 	flag.BoolVar(&showVersion, "version", false, "print version and exit")
 	flag.Parse()
 

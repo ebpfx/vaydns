@@ -226,8 +226,8 @@ func NewDNSPacketConn(transport net.PacketConn, addr net.Addr, domain dns.Name, 
 // newDNSPacketConn is the internal constructor that can optionally receive a
 // pointer to the active stream counter for stream-aware polling.
 func newDNSPacketConn(transport net.PacketConn, addr net.Addr, domain dns.Name, rateLimiter *RateLimiter, maxQnameLen int, maxNumLabels int, wireConfig turbotunnel.WireConfig, forgedStats *ForgedStats, rrType uint16, activeStreams *atomic.Int32, pollDelay time.Duration, activePollDelay time.Duration, pollMaxDelay time.Duration, numWorkers int, queueSize int, overflowMode turbotunnel.QueueOverflowMode) *DNSPacketConn {
-	if maxQnameLen <= 0 || maxQnameLen > 253 {
-		maxQnameLen = 253
+	if maxQnameLen <= 0 || maxQnameLen > MaxQnameWireLen {
+		maxQnameLen = MaxQnameWireLen
 	}
 	if pollDelay <= 0 {
 		pollDelay = DefaultPollDelay
@@ -529,10 +529,10 @@ func chunks(p []byte, n int) [][]byte {
 // The encoded bytes are base32-encoded, split into 63-byte labels, and
 // appended with the tunnel domain to form the DNS query name. Label count
 // and total QNAME length are constrained by maxQnameLen and maxNumLabels.
-	// The query QTYPE is set to rrType to match the server's configured
-	// response encoding.
+// The query QTYPE is set to rrType to match the server's configured
+// response encoding.
 func (c *DNSPacketConn) send(transport net.PacketConn, p []byte, addr net.Addr) error {
-	const labelLen = 63 // DNS maximum label size
+	const labelLen = dns.MaxLabelLength // DNS maximum label size
 
 	domain := c.domain
 
@@ -544,8 +544,8 @@ func (c *DNSPacketConn) send(transport net.PacketConn, p []byte, addr net.Addr) 
 
 	// Calculate available wire bytes for data labels.
 	maxQnameLen := c.maxQnameLen
-	if maxQnameLen <= 0 || maxQnameLen > 253 {
-		maxQnameLen = 253
+	if maxQnameLen <= 0 || maxQnameLen > MaxQnameWireLen {
+		maxQnameLen = MaxQnameWireLen
 	}
 	availableWireBytes := maxQnameLen - domainWireLen
 	if availableWireBytes <= 0 {

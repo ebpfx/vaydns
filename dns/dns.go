@@ -15,6 +15,12 @@ import (
 // Without something like this, infinite loops are possible.
 const compressionPointerLimit = 10
 
+// DNS wire-format limits from RFC 1035.
+const (
+	MaxLabelLength = 63
+	MaxNameLength  = 255
+)
+
 var (
 	// ErrZeroLengthLabel is the error returned for names that contain a
 	// zero-length label, like "example..com".
@@ -127,14 +133,14 @@ func NewName(labels [][]byte) (Name, error) {
 		if len(label) == 0 {
 			return nil, ErrZeroLengthLabel
 		}
-		if len(label) > 63 {
+		if len(label) > MaxLabelLength {
 			return nil, ErrLabelTooLong
 		}
 	}
 	// Check the total length.
 	builder := newMessageBuilder()
 	builder.WriteName(name)
-	if len(builder.Bytes()) > 255 {
+	if len(builder.Bytes()) > MaxNameLength {
 		return nil, ErrNameTooLong
 	}
 	return name, nil
@@ -223,7 +229,7 @@ func NameFromWireFormat(data []byte) (Name, error) {
 		if length == 0 {
 			break
 		}
-		if length > 63 {
+		if length > MaxLabelLength {
 			return nil, ErrLabelTooLong
 		}
 		if i+length > len(data) {
@@ -606,7 +612,7 @@ func (builder *messageBuilder) WriteName(name Name) {
 		// entry pointing to the beginning of it.
 		builder.nameCache[name[i:].String()] = builder.w.Len()
 		length := len(name[i])
-		if length == 0 || length > 63 {
+		if length == 0 || length > MaxLabelLength {
 			panic(length)
 		}
 		builder.w.WriteByte(byte(length))
@@ -853,7 +859,7 @@ var base32Encoding = base32.StdEncoding.WithPadding(base32.NoPadding)
 // encodePayloadAsName base32-encodes a payload into DNS name labels and appends
 // the tunnel domain. Returns the uncompressed wire-format domain name.
 func encodePayloadAsName(p []byte, domain Name) ([]byte, error) {
-	const labelLen = 63
+	const labelLen = MaxLabelLength
 
 	encoded := make([]byte, base32Encoding.EncodedLen(len(p)))
 	base32Encoding.Encode(encoded, p)

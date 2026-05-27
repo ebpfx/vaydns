@@ -60,7 +60,7 @@ func TestNextPacket(t *testing.T) {
 // computeQueryNameLen calculates the total length of a DNS query name
 // given encoded data length and domain labels.
 func computeQueryNameLen(encodedLen int, domain dns.Name) int {
-	const labelLen = 63
+	const labelLen = dns.MaxLabelLength
 	numLabels := (encodedLen + labelLen - 1) / labelLen
 	if numLabels == 0 {
 		numLabels = 1
@@ -104,7 +104,7 @@ func TestRateLimiterNil(t *testing.T) {
 }
 
 func TestLabelConstraints(t *testing.T) {
-	const labelLen = 63
+	const labelLen = dns.MaxLabelLength
 	testCases := []struct {
 		maxQnameLen  int
 		maxNumLabels int
@@ -193,7 +193,7 @@ func TestSendEncodesDataQuery(t *testing.T) {
 		wireConfig:  turbotunnel.WireConfig{ClientIDSize: 3},
 		domain:      domain,
 		rrType:      dns.RRTypeTXT,
-		maxQnameLen: 253,
+		maxQnameLen: MaxQnameWireLen,
 	}
 
 	payload := []byte("abc")
@@ -223,7 +223,7 @@ func TestSendEncodesPollQuery(t *testing.T) {
 		wireConfig:  turbotunnel.WireConfig{ClientIDSize: 2},
 		domain:      domain,
 		rrType:      dns.RRTypeTXT,
-		maxQnameLen: 253,
+		maxQnameLen: MaxQnameWireLen,
 	}
 
 	if err := c.send(conn, nil, turbotunnel.DummyAddr{}); err != nil {
@@ -251,7 +251,7 @@ func TestSendRejectsOversizeDataQuery(t *testing.T) {
 		wireConfig:  turbotunnel.WireConfig{ClientIDSize: 2},
 		domain:      domain,
 		rrType:      dns.RRTypeTXT,
-		maxQnameLen: 253,
+		maxQnameLen: MaxQnameWireLen,
 	}
 
 	if err := c.send(&capturePacketConn{}, bytes.Repeat([]byte{'x'}, 256), turbotunnel.DummyAddr{}); err == nil {

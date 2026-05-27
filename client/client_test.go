@@ -8,9 +8,9 @@ import (
 )
 
 func TestDNSNameCapacity(t *testing.T) {
-	const labelLen = 63
-	for domainLen := 0; domainLen < 255; domainLen++ {
-		domain, err := dns.NewName(chunks(bytes.Repeat([]byte{'x'}, domainLen), 63))
+	const labelLen = dns.MaxLabelLength
+	for domainLen := 0; domainLen < dns.MaxNameLength; domainLen++ {
+		domain, err := dns.NewName(chunks(bytes.Repeat([]byte{'x'}, domainLen), dns.MaxLabelLength))
 		if err != nil {
 			continue
 		}
@@ -79,8 +79,8 @@ func TestDNSNameCapacityMultiDomain(t *testing.T) {
 
 		capacityUnlimited := DNSNameCapacity(domain, 0, 0)
 		capacityLimitedQname := DNSNameCapacity(domain, 150, 0)
-		capacityLimitedLabels := DNSNameCapacity(domain, 0, 2)
-		capacityBothLimits := DNSNameCapacity(domain, 150, 2)
+		capacityLimitedLabels := DNSNameCapacity(domain, 0, DefaultMaxNumLabels)
+		capacityBothLimits := DNSNameCapacity(domain, 150, DefaultMaxNumLabels)
 
 		t.Logf("domain=%s | unlimited=%d qname150=%d labels2=%d both=%d",
 			domainStr, capacityUnlimited, capacityLimitedQname, capacityLimitedLabels, capacityBothLimits)
@@ -138,13 +138,13 @@ func TestTunnelServerDefaults(t *testing.T) {
 		t.Fatalf("NewTunnelServer: %v", err)
 	}
 
-	if got, want := ts.effectiveMaxQnameLen(), 63; got != want {
+	if got, want := ts.effectiveMaxQnameLen(), DefaultMaxQnameLen; got != want {
 		t.Fatalf("effectiveMaxQnameLen = %d, want %d", got, want)
 	}
-	if got, want := ts.wireConfig().ClientIDSize, 1; got != want {
+	if got, want := ts.wireConfig().ClientIDSize, DefaultClientIDSize; got != want {
 		t.Fatalf("default client ID size = %d, want %d", got, want)
 	}
-	if got, want := ts.MaxNumLabels, 1; got != want {
+	if got, want := ts.effectiveMaxNumLabels(), DefaultMaxNumLabels; got != want {
 		t.Fatalf("default max num labels = %d, want %d", got, want)
 	}
 
