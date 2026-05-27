@@ -166,7 +166,7 @@ func handleStream(stream *smux.Stream, upstream string, conv uint32, idleTimeout
 
 	streamConn := &idleDeadlineConn{
 		Conn:        stream,
-		idleTimeout: idleTimeout,
+		idleTimeout: idleTimeout * 2,
 	}
 	var wg sync.WaitGroup
 	wg.Add(2)
@@ -178,7 +178,7 @@ func handleStream(stream *smux.Stream, upstream string, conv uint32, idleTimeout
 			err = nil
 		}
 		if err != nil && !errors.Is(err, io.ErrClosedPipe) {
-			log.Warnf("[%08x:%d] upstream -> client copy error: %v", conv, stream.ID(), err)
+			log.Debugf("[%08x:%d] upstream -> client copy error: %v", conv, stream.ID(), err)
 		}
 		upstreamTCPConn.CloseRead()
 		stream.Close()
@@ -191,7 +191,7 @@ func handleStream(stream *smux.Stream, upstream string, conv uint32, idleTimeout
 			err = nil
 		}
 		if err != nil && !errors.Is(err, io.ErrClosedPipe) {
-			log.Warnf("[%08x:%d] client -> upstream copy error: %v", conv, stream.ID(), err)
+			log.Debugf("[%08x:%d] client -> upstream copy error: %v", conv, stream.ID(), err)
 		}
 		upstreamTCPConn.CloseWrite()
 	}()
