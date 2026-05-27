@@ -1000,7 +1000,7 @@ func run(domain dns.Name, upstream string, dnsConn net.PacketConn, idleTimeout t
 
 	stats := &ServerStats{}
 	go func() {
-		ticker := time.NewTicker(5 * time.Second)
+		ticker := time.NewTicker(15 * time.Second)
 		defer ticker.Stop()
 		for {
 			select {
