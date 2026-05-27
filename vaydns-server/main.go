@@ -124,7 +124,7 @@ func (s *ServerStats) log() {
 	total := atomic.LoadUint64(&s.total)
 	success := atomic.LoadUint64(&s.success)
 	responseDropped := atomic.LoadUint64(&s.responseDropped)
-	log.Infof("queries: %d total, %d answered, %d dropped (response queue full)", total, success, responseDropped)
+	log.Debugf("queries: %d total, %d answered, %d dropped", total, success, responseDropped)
 }
 
 type idleDeadlineConn struct {
