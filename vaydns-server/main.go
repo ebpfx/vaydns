@@ -57,7 +57,7 @@ const (
 	defaultResponseWorkers   = 8
 	defaultResponseQueueSize = 0
 	DefaultUpstreamAddr      = "127.0.0.1:10888"
-	DefaultClientIDSize      = 1
+	DefaultClientIDSize      = 4
 	DefaultRecordType        = "null"
 	DefaultKCPWindowSize     = 0
 	DefaultLogLevel          = "info"

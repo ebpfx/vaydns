@@ -68,7 +68,7 @@ r.UDPTimeout = 800 * time.Millisecond           // per-query timeout
 r.UDPAcceptErrors = true                        // accept non-NOERROR responses (disables forged filtering)
 
 // Tunnel server options
-ts.ClientIDSize = 1      // smaller ClientID
+ts.ClientIDSize = 4      // default ClientID size
 ts.MaxQnameLen = 101     // QNAME length constraint
 ts.MaxNumLabels = 2      // label count constraint
 ts.RPS = 200             // rate limit queries/second

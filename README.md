@@ -105,7 +105,7 @@ sudo ip6tables -t nat -I PREROUTING -i eth0 -p udp --dport 53 -j REDIRECT --to-p
 | `-mtu N`             | Max UDP payload size for responses                                | `1232`     |
 | `-idle-timeout D`    | Session idle timeout (must match client)                          | `10s`      |
 | `-keepalive D`       | Keepalive ping interval (must match client, must be < idle-timeout) | `2s`      |
-| `-clientid-size N`   | ClientID size in bytes                                              | `1`        |
+| `-clientid-size N`   | ClientID size in bytes                                              | `4`        |
 | `-record-type TYPE`  | DNS record type for downstream data: `null`, `txt`, `hinfo`, `cname`, `a`, `aaaa`, `mx`, `ns`, `srv`, `cert`, `https`, `caa`. Must match the client. | `null`     |
 | `-queue-size N`      | Packet queue size for transport and DNS layers                    | `512`      |
 | `-kcp-window-size N` | KCP send/receive window size in packets (0 = queue-size/2)        | `0`        |
@@ -191,14 +191,14 @@ These reduce upstream throughput but improve compatibility. The minimum effectiv
 > maxQnameLen >= dataLabelWireBytes + domainWireLen
 > ```
 >
-> Where `domainWireLen` is the wire-format length of the tunnel domain (`1 + len` per label — e.g. `t.example.com` = 14 bytes), and the client subtracts upstream framing overhead from the raw base32 capacity to derive the KCP MTU (`clientid-size + 1` bytes, so 2 bytes by default). With a domain like `t.example.com`, the default `max-qname-len=101` still yields usable MTU headroom. The client exits if the resulting MTU falls below 25 bytes.
+> Where `domainWireLen` is the wire-format length of the tunnel domain (`1 + len` per label — e.g. `t.example.com` = 14 bytes), and the client subtracts upstream framing overhead from the raw base32 capacity to derive the KCP MTU (`clientid-size + 1` bytes, so 5 bytes by default). With a domain like `t.example.com`, the default `max-qname-len=101` still yields usable MTU headroom. The client exits if the resulting MTU falls below 25 bytes.
 
 #### Other
 
 | Flag               | Description                                                | Default         |
 | ------------------ | ---------------------------------------------------------- | --------------- |
 | `-rps N`           | Rate limit outgoing DNS queries per second (0 = unlimited). Uses a token bucket with 1-second burst allowance. | `0`             |
-| `-clientid-size N` | ClientID size in bytes | `1`             |
+| `-clientid-size N` | ClientID size in bytes | `4`             |
 | `-record-type TYPE` | DNS record type for downstream data: `null`, `txt`, `hinfo`, `cname`, `a`, `aaaa`, `mx`, `ns`, `srv`, `cert`, `https`, `caa`. Must match the server. | `null`          |
 | `-log-level LEVEL` | Log level: debug, info, warning, error                     | `info`          |
 

@@ -50,7 +50,7 @@ const (
 	DefaultPollMaxDelay             = 1 * time.Second
 	DefaultUDPTransportStaleTimeout = 15 * time.Second
 	DefaultOpenStreamFailureLimit   = 3
-	DefaultClientIDSize             = 1
+	DefaultClientIDSize             = 4
 	DefaultMaxQnameLen              = 101
 	DefaultMaxNumLabels             = 2
 	DefaultRecordType               = "null"
