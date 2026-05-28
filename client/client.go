@@ -147,6 +147,9 @@ func (ts *TunnelServer) effectiveMaxQnameLen() int {
 	if ts.MaxQnameLen > 0 {
 		return ts.MaxQnameLen
 	}
+	if ts.MaxQnameLen == 0 {
+		return MaxQnameWireLen
+	}
 	return DefaultMaxQnameLen
 }
 
@@ -154,6 +157,9 @@ func (ts *TunnelServer) effectiveMaxQnameLen() int {
 func (ts *TunnelServer) effectiveMaxNumLabels() int {
 	if ts.MaxNumLabels > 0 {
 		return ts.MaxNumLabels
+	}
+	if ts.MaxNumLabels == 0 {
+		return 0 // unlimited
 	}
 	return DefaultMaxNumLabels
 }
