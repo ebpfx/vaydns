@@ -127,29 +127,19 @@ func (s *ServerStats) log() {
 	log.Debugf("queries: %d total, %d answered, %d dropped", total, success, responseDropped)
 }
 
-type idleDeadlineConn struct {
-	net.Conn
-	idleTimeout time.Duration
-}
-
-func (c *idleDeadlineConn) Read(p []byte) (int, error) {
-	if c.idleTimeout > 0 {
-		c.Conn.SetReadDeadline(time.Now().Add(c.idleTimeout))
-	}
-	return c.Conn.Read(p)
-}
-
-func (c *idleDeadlineConn) Write(p []byte) (int, error) {
-	if c.idleTimeout > 0 {
-		c.Conn.SetWriteDeadline(time.Now().Add(c.idleTimeout))
-	}
-	return c.Conn.Write(p)
-}
-
 // handleStream bidirectionally connects a client stream with a TCP socket
 // addressed by upstream.
-func handleStream(stream *smux.Stream, upstream string, conv uint32, idleTimeout time.Duration, upstreamDialSem chan struct{}) error {
-	upstreamDialSem <- struct{}{}
+func handleStream(stream *smux.Stream, upstream string, conv uint32, upstreamDialSem chan struct{}) error {
+	timer := time.NewTimer(upstreamDialTimeout)
+	defer timer.Stop()
+	select {
+	case upstreamDialSem <- struct{}{}:
+	case <-stream.GetDieCh():
+		return io.ErrClosedPipe
+	case <-timer.C:
+		return fmt.Errorf("stream %08x:%d waiting for upstream dial slot timed out after %s", conv, stream.ID(), upstreamDialTimeout)
+	}
+
 	dialer := net.Dialer{
 		Timeout: upstreamDialTimeout,
 	}
@@ -164,15 +154,19 @@ func handleStream(stream *smux.Stream, upstream string, conv uint32, idleTimeout
 		log.Debugf("[%08x:%d] failed to set TCP_NODELAY on upstream connection: %v", conv, stream.ID(), err)
 	}
 
-	streamConn := &idleDeadlineConn{
-		Conn:        stream,
-		idleTimeout: idleTimeout * 2,
+	var closeOnce sync.Once
+	closeBoth := func() {
+		closeOnce.Do(func() {
+			stream.Close()
+			upstreamTCPConn.Close()
+		})
 	}
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		_, err := io.Copy(streamConn, upstreamTCPConn)
+		defer closeBoth()
+		_, err := io.Copy(stream, upstreamTCPConn)
 		if err == io.EOF {
 			// smux Stream.Write may return io.EOF.
 			err = nil
@@ -180,12 +174,11 @@ func handleStream(stream *smux.Stream, upstream string, conv uint32, idleTimeout
 		if err != nil && !errors.Is(err, io.ErrClosedPipe) {
 			log.Debugf("[%08x:%d] upstream -> client copy error: %v", conv, stream.ID(), err)
 		}
-		upstreamTCPConn.CloseRead()
-		stream.Close()
 	}()
 	go func() {
 		defer wg.Done()
-		_, err := io.Copy(upstreamTCPConn, streamConn)
+		defer closeBoth()
+		_, err := io.Copy(upstreamTCPConn, stream)
 		if err == io.EOF {
 			// smux Stream.WriteTo may return io.EOF.
 			err = nil
@@ -193,7 +186,6 @@ func handleStream(stream *smux.Stream, upstream string, conv uint32, idleTimeout
 		if err != nil && !errors.Is(err, io.ErrClosedPipe) {
 			log.Debugf("[%08x:%d] client -> upstream copy error: %v", conv, stream.ID(), err)
 		}
-		upstreamTCPConn.CloseWrite()
 	}()
 	wg.Wait()
 
@@ -228,7 +220,7 @@ func acceptStreams(conn *kcp.UDPSession, upstream string, idleTimeout time.Durat
 				log.Debugf("[%08x:%d] stream closed", conn.GetConv(), stream.ID())
 				stream.Close()
 			}()
-			err := handleStream(stream, upstream, conn.GetConv(), idleTimeout, upstreamDialSem)
+			err := handleStream(stream, upstream, conn.GetConv(), upstreamDialSem)
 			if err != nil {
 				log.Warnf("[%08x:%d] stream error: %v", conn.GetConv(), stream.ID(), err)
 			}
