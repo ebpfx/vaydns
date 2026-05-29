@@ -857,7 +857,8 @@ func (t *Tunnel) ListenAndServe(listenAddr string) error {
 			go func(local *net.TCPConn, sess *smux.Session, conv uint32, openFailCount *atomic.Int32) {
 				defer local.Close()
 				if age := t.udpTransportStaleAge(true); age > t.UDPTransportStaleTimeout {
-					log.Warnf("[%08x] DNS transport stale for %s, dropping incoming connection", conv, age.Round(time.Second))
+					log.Warnf("[%08x] DNS transport stale for %s, retiring session and dropping incoming connection", conv, age.Round(time.Second))
+					sess.Close()
 					return
 				}
 				err := t.handleConn(local, sess, conv, openFailCount)
