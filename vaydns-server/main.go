@@ -214,7 +214,7 @@ func acceptStreams(conn *kcp.UDPSession, upstream string, idleTimeout time.Durat
 			}
 			return err
 		}
-		log.Infof("[%08x:%d] stream opened", conn.GetConv(), stream.ID())
+		log.Infof("[%08x:%d] stream ready", conn.GetConv(), stream.ID())
 		go func() {
 			defer func() {
 				log.Debugf("[%08x:%d] stream closed", conn.GetConv(), stream.ID())

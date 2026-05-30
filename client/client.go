@@ -655,7 +655,7 @@ func (t *Tunnel) OpenStream() (net.Conn, error) {
 		conv := conn.GetConv()
 		stream, err := openStreamWithTimeout(conv, timeout, sess.OpenStream)
 		if err == nil {
-			log.Debugf("[%08x:%d] stream opened", conv, stream.ID())
+			log.Debugf("[%08x:%d] stream ready", conv, stream.ID())
 			return stream, nil
 		}
 
@@ -908,7 +908,7 @@ func (t *Tunnel) handleConn(local *net.TCPConn, sess *smux.Session, conv uint32,
 		log.Debugf("[%08x:%d] stream closed", conv, stream.ID())
 		stream.Close()
 	}()
-	log.Infof("[%08x:%d] stream opened", conv, stream.ID())
+	log.Infof("[%08x:%d] stream ready", conv, stream.ID())
 
 	var wg sync.WaitGroup
 	wg.Add(2)
