@@ -147,14 +147,16 @@ func (c *UDPPacketConn) sendRecv(p []byte) error {
 		// Check RCODE. Non-NOERROR usually means a forged/injected response.
 		if resp.Flags&0x000f != dns.RcodeNoError {
 			rcode := resp.Flags & 0x000f
-			// Mark success regardless: the resolver is reachable and responding.
-			// Stale detection tracks transport liveness, not data quality.
+			// Resolver is reachable even if it returns an error response.
+			// Refresh lastSuccess so stale detection does not retire a session
+			// that is only receiving forged/error DNS replies.
 			c.markSuccess()
 			if c.ignoreErrors {
 				c.forgedStats.Record(rcode)
-				// Brief sleep before retrying to avoid spinning all workers
-				// in a tight loop when the resolver floods us with errors.
-				time.Sleep(50 * time.Millisecond)
+				// Refresh deadline on each retry so accumulated sleep time across
+				// forged responses doesn't drain the original deadline and cause a
+				// spurious timeout error that backs off all workers.
+				conn.SetReadDeadline(time.Now().Add(c.responseTimeout))
 				continue
 			}
 			// Pass it through — dns.go recvLoop will drop it as a safety net.

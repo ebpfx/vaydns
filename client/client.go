@@ -48,7 +48,7 @@ const (
 	DefaultPollDelay                = 500 * time.Millisecond
 	DefaultActivePollDelay          = 200 * time.Millisecond
 	DefaultPollMaxDelay             = 1 * time.Second
-	DefaultUDPTransportStaleTimeout = 15 * time.Second
+	DefaultUDPTransportStaleTimeout = 5 * time.Second
 	DefaultOpenStreamFailureLimit   = 3
 	DefaultClientIDSize             = 4
 	DefaultMaxQnameLen              = 101
@@ -821,6 +821,7 @@ func (t *Tunnel) ListenAndServe(listenAddr string) error {
 				if ne, ok := err.(net.Error); ok && ne.Timeout() {
 					if age := t.udpTransportStaleAge(true); age > t.UDPTransportStaleTimeout {
 						log.Warnf("[%08x] DNS transport stale for %s with %d active stream(s), retiring session", conv, age.Round(time.Second), t.busyStreams.Load())
+						sess.Close()
 						sessionAlive = false
 						continue
 					}
