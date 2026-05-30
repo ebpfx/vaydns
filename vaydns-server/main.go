@@ -469,7 +469,7 @@ func responseFor(query *dns.Message, domain dns.Name, addr net.Addr) (*dns.Messa
 	// FORMERR MUST be returned."
 	if payloadSize < maxUDPPayload {
 		resp.Flags |= dns.RcodeFormatError
-		log.Infof("rejected query from %s: advertised UDP payload size %d is below minimum %d", addr, payloadSize, maxUDPPayload)
+		log.Debugf("rejected query from %s: advertised UDP payload size %d is below minimum %d", addr, payloadSize, maxUDPPayload)
 		return resp, nil
 	}
 
