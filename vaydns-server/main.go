@@ -1063,7 +1063,7 @@ Example:
 	flag.IntVar(&maxUDPPayload, "mtu", DefaultMaxUDPPayload, "maximum size of DNS responses")
 	flag.StringVar(&udpAddr, "udp", "", "UDP address to listen on (required)")
 	flag.StringVar(&domainArg, "domain", "", "tunnel domain (e.g., t.example.com)")
-	flag.StringVar(&upstream, "upstream", DefaultUpstreamAddr, "TCP address to forward tunneled connections to (default 127.0.0.1:10888)")
+	flag.StringVar(&upstream, "upstream", DefaultUpstreamAddr, "TCP address to forward tunneled connections to")
 	// idle-timeout: if no data is received from a client for this long,
 	// the tunnel session is considered dead and torn down. Should match
 	// the client's -idle-timeout.
