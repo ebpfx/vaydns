@@ -1,12 +1,16 @@
 # VayDNS
 
-Userspace DNS tunnel with plaintext UDP transport.
+High-performance and reliable DNS tunnel with aggressive connection recovery for hostile networks.
 
-> VayDNS is a fork of [dnstt](https://www.bamsoftware.com/software/dnstt/) by David Fifield, with protocol optimizations and additional features. The transport and wire protocol have diverged and are no longer compatible with upstream dnstt.
+![41Mbps through VayDNS](./speedtest.jpg)  
+*__41Mbps__ through __VayDNS__ during __140-day__ complete __internet shutdown__ in Iran*
+
+During Iran's 140-day complete internet shutdown, all international traffic was dropped at L3.  
+Over VayDNS, we still got **41 Mbps**, watched YouTube in 1080p, and played PUBG Mobile.
 
 ## Features
 
-- **Plain UDP transport** — direct DNS queries with per-query socket rotation
+- **UDP transport** — direct DNS queries with per-query socket rotation
 - **Reliable delivery** — KCP/smux session protocol with automatic retransmission
 - **Lean transport stack** — smux directly over KCP to minimize per-packet overhead
 - **Censorship resistance** — per-query UDP sockets with forged-response filtering
